@@ -142,7 +142,7 @@ Clone this repository into your Forge `extensions/` directory.
 Example from the Forge root:
 
 ```bash
-git clone https://github.com/<your-account>/sd-forge-llm-prompt-gen-yoiko.git extensions/sd-forge-llm-prompt-gen-yoiko
+git clone https://github.com/<yoikoarmor>/sd-forge-llm-prompt-gen-yoiko.git extensions/sd-forge-llm-prompt-gen-yoiko
 ```
 
 Then restart Forge.
