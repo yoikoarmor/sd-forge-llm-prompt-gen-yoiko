@@ -1,0 +1,13 @@
+artifacts/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+configs/model_registry.json
+.vscode/
+.idea/
+publish/

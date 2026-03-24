@@ -1,0 +1,7 @@
+# Install only if missing. Do not pin aggressive versions in this shared Forge environment.
+transformers
+huggingface_hub
+peft
+accelerate
+bitsandbytes
+safetensors

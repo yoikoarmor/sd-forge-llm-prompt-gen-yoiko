@@ -1,0 +1,14 @@
+{
+  "max_new_tokens": 128,
+  "do_sample": true,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "top_k": null,
+  "repetition_penalty": 1.0,
+  "input_template_mode": "simple_chat_template",
+  "cache_implementation": "dynamic",
+  "use_cache": false,
+  "seed_mode": "random",
+  "llm_seed": 42,
+  "debug_compare_input_variants": false
+}
