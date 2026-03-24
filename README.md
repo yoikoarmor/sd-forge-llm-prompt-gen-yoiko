@@ -142,7 +142,7 @@ Clone this repository into your Forge `extensions/` directory.
 Example from the Forge root:
 
 ```bash
-git clone https://github.com/<yoikoarmor>/sd-forge-llm-prompt-gen-yoiko.git extensions/sd-forge-llm-prompt-gen-yoiko
+git clone https://github.com/yoikoarmor/sd-forge-llm-prompt-gen-yoiko.git extensions/sd-forge-llm-prompt-gen-yoiko
 ```
 
 Then restart Forge.
@@ -233,7 +233,9 @@ Path rules in this beta:
 Recommended public references:
 
 - base model: `Qwen/Qwen2.5-7B-Instruct`
+  - https://huggingface.co/Qwen/Qwen2.5-7B-Instruct
 - adapter: `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
+  - https://huggingface.co/yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora
 
 On the first run, the extension can download both the base model and the adapter from Hugging Face.
 Large first-time downloads are expected.
@@ -280,6 +282,7 @@ Planned distribution split:
 
 - GitHub repository: Forge extension code
 - Hugging Face model repository: `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
+  - https://huggingface.co/yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora
 
 Local helper directory for preparing a Hugging Face upload:
 
@@ -318,7 +321,8 @@ Old local experimental naming may still appear in local-only files under `artifa
 #### If `LLM Model = none`
 
 - No model is loaded.
-- The extension uses manual prompt prepend behavior.
+- The extension does not call the LLM.
+- `Gen Prompt` is used directly as the prompt head in manual prepend behavior.
 
 #### If a real model is selected and `Gen Prompt` is not empty
 
