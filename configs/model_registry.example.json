@@ -1,0 +1,27 @@
+{
+  "models": {
+    "qwen2.5-7b-instruct": {
+      "enabled": true,
+      "description": "Recommended beta example. Use Hugging Face repo IDs by default, or replace with local paths if you prefer offline/local-only operation.",
+      "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
+      "adapter_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
+      "tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
+      "cache_dir": null,
+      "fallback_base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
+      "fallback_adapter_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
+      "fallback_tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
+      "allow_auto_download_missing": true,
+      "load_in_4bit": true,
+      "bnb_4bit_quant_type": "nf4",
+      "bnb_4bit_compute_dtype": "bfloat16",
+      "use_double_quant": true,
+      "device_map": "auto",
+      "torch_dtype": "bfloat16",
+      "trust_remote_code": false,
+      "local_files_only": false,
+      "tokenizer_source": "adapter",
+      "chat_template_source": "adapter",
+      "use_fast_tokenizer": true
+    }
+  }
+}
