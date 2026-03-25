@@ -42,7 +42,7 @@ This repo does **not** include:
 - training artifacts
 - any mandatory local `artifacts/` dependency
 
-Base models and LoRA adapters are expected to be provided separately and configured in `configs/model_registry.json`.
+Base models and LoRA adapters are expected to be provided separately and configured in `configs/model_registry.json exists and is valid JSON, or the example fallback is usable`.
 They can be referenced either by local path or by Hugging Face repo ID.
 
 Public LoRA release name:
@@ -285,10 +285,6 @@ Planned distribution split:
 - Hugging Face model repository: `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
   - https://huggingface.co/yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora
 
-Local helper directory for preparing a Hugging Face upload:
-
-- `publish/yoiko-Qwen2.5-7B-Instruct-lora/`
-
 Planned license split:
 
 - Forge extension code: `AGPL-3.0-or-later`
@@ -374,7 +370,7 @@ Check:
 - `Enable LLM Prompt Gen` is on
 - `LLM Model` is not `none`
 - `Gen Prompt` is not empty
-- `configs/model_registry.json` exists and is valid JSON
+- `configs/model_registry.json` exists and is valid JSON, or the example fallback is usable
 
 ### The model fails to load
 
@@ -474,7 +470,7 @@ Base models and LoRA/adapters are not bundled in this repository.
 
 The intended public LoRA package `yoiko-Qwen2.5-7B-Instruct-lora` is separate from this repository and may use a different license for the weight package itself.
 
-The staged Hugging Face package for `yoiko-Qwen2.5-7B-Instruct-lora` is currently prepared under `Apache-2.0`.
+The public Hugging Face package for `yoiko-Qwen2.5-7B-Instruct-lora` is released under `Apache-2.0`.
 
 Model weights may have their own licenses and must be checked separately by users before use, redistribution, or publication.
 
