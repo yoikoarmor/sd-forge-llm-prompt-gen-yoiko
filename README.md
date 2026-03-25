@@ -314,6 +314,7 @@ Old local experimental naming may still appear in local-only files under `artifa
 #### If `Enable LLM Prompt Gen` is off
 
 - Forge behavior is unchanged.
+- If an LLM model is currently loaded in the extension runtime, it is unloaded when you press Generate with the feature turned off.
 
 #### If `LLM Model = none`
 
