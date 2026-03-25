@@ -375,7 +375,11 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 original_prompt,
             )
 
-            if decision.llm_enabled and decision.llm_model_name != "none" and not decision.gen_prompt_empty:
+            if not decision.llm_enabled:
+                runtime = get_runtime()
+                unloaded = runtime.unload(logger=self._log)
+                decision.runtime_action = "disabled_and_unloaded_model" if unloaded else "disabled_no_loaded_model"
+            elif decision.llm_model_name != "none" and not decision.gen_prompt_empty:
                 decision = self._generate_with_llm(decision, negative_prompt)
 
             setattr(p, "_llm_prompt_gen_decision", decision)
