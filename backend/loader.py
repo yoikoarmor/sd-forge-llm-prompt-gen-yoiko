@@ -42,6 +42,11 @@ ADAPTER_REQUIRED_FILES = [
     "tokenizer.json",
     "tokenizer_config.json",
 ]
+BASE_MODEL_ALLOW_PATTERNS = [
+    "*.json",
+    "*.safetensors",
+    "*.bin",
+]
 TOKENIZER_ALLOW_PATTERNS = [
     "tokenizer.json",
     "tokenizer_config.json",
@@ -666,8 +671,9 @@ def load_model_bundle(spec, logger=None):
         cache_dir=spec.cache_dir,
         local_files_only=spec.local_files_only,
         logger=logger,
+        allow_patterns=BASE_MODEL_ALLOW_PATTERNS,
         probe_filenames=["config.json", "model.safetensors.index.json", "pytorch_model.bin.index.json"],
-        download_strategy="defer_to_loader",
+        download_strategy="snapshot",
         fallback_reference=spec.fallback_base_model_name_or_path,
         allow_missing_fallback=bool(spec.allow_auto_download_missing),
     )
@@ -708,7 +714,7 @@ def load_model_bundle(spec, logger=None):
     model_kwargs = {
         "device_map": spec.device_map,
         "trust_remote_code": spec.trust_remote_code,
-        "local_files_only": spec.local_files_only if base_reference.source == "huggingface" else True,
+        "local_files_only": True if base_reference.resolved_local_path else spec.local_files_only,
         "low_cpu_mem_usage": True,
         "cache_dir": spec.cache_dir,
     }
@@ -730,10 +736,13 @@ def load_model_bundle(spec, logger=None):
     base_download_failed = False
 
     if base_reference.source == "huggingface":
-        base_download_started = True
+        base_download_started = bool(base_reference.download_started)
+        base_download_finished = bool(base_reference.download_finished)
+        base_download_failed = bool(base_reference.download_failed)
         _safe_log(
             logger,
-            f"base_download_started reference={base_reference.original_reference} "
+            f"base_download_wait_complete reference={base_reference.original_reference} "
+            f"resolved_local_path={base_reference.resolved_local_path} "
             f"cache_dir={spec.cache_dir} local_files_only={spec.local_files_only} "
             f"local_cache_hit={base_reference.local_cache_hit}",
         )
@@ -753,13 +762,6 @@ def load_model_bundle(spec, logger=None):
                 _format_hf_error(exc, "base_model", spec.base_model_name_or_path)
             ) from exc
         raise ModelLoadError(f"Failed to load base model '{spec.base_model_name_or_path}': {exc}") from exc
-
-    if base_reference.source == "huggingface":
-        base_download_finished = True
-        _safe_log(
-            logger,
-            f"base_download_finished reference={base_reference.original_reference}",
-        )
 
     base_model_class = type(base_model_obj).__name__
     model = base_model_obj
