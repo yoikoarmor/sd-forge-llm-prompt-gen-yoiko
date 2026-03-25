@@ -259,6 +259,7 @@ Recommended beta defaults:
 Notes:
 
 - the first run may take a while
+- on the first run, the extension now waits for the full base-model snapshot download to finish before prompt generation returns control to Forge
 - repeated runs should reuse the Hugging Face cache
 - if `local_files_only` is `true`, uncached remote IDs will fail instead of downloading
 - private or gated repos may require authentication
