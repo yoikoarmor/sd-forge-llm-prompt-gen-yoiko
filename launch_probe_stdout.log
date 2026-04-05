@@ -1,0 +1,18 @@
+Python 3.10.18 (main, Jul 23 2025, 00:29:36) [MSC v.1944 64 bit (AMD64)]
+Version: f2.0.1v1.10.1-previous-669-gdfdcbab6
+Commit hash: dfdcbab685e57677014f05a3309b48cc87383167
+Launching Web UI with arguments: --skip-install --gradio-allowed-path 'D:\stablematrix\Data\Images'
+Total VRAM 32607 MB, total RAM 63093 MB
+pytorch version: 2.9.0+cu128
+Set vram state to: NORMAL_VRAM
+Device: cuda:0 NVIDIA GeForce RTX 5090 : native
+Hint: your device supports --cuda-malloc for potential speed improvements.
+VAE dtype preferences: [torch.bfloat16, torch.float32] -> torch.bfloat16
+CUDA Using Stream: False
+Using pytorch cross attention
+Using pytorch attention for VAE
+ControlNet preprocessor location: D:\stablematrix\Data\Packages\forge-test\models\ControlNetPreprocessor
+[sd-forge-llm-prompt-gen-yoiko] extension script loaded
+2026-04-05 12:53:09,808 - ControlNet - [0;32mINFO[0m - ControlNet UI callback registered.
+Model selected: {'checkpoint_info': {'filename': 'D:\\stablematrix\\Data\\Packages\\forge-test\\models\\Stable-diffusion\\sd\\yoiko_style_line-shape-V2.2.safetensors', 'hash': '0a1318cc'}, 'additional_modules': ['D:\\stablematrix\\Data\\Packages\\forge-test\\models\\VAE\\sdxlVAE_sdxlVAE.safetensors'], 'unet_storage_dtype': None}
+Using online LoRAs in FP16: False
