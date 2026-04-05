@@ -1,9 +1,7 @@
-# Install the minimum versions needed for the current Qwen beta targets.
-# Forge's Gradio stack still expects HfFolder, so install.py also adds a
-# lightweight compatibility shim for huggingface_hub >= 1.x.
-transformers>=5.3.0,<6.0.0
-huggingface_hub>=1.5.0,<2.0.0
-peft>=0.18.1
-accelerate>=1.13.0
-bitsandbytes>=0.48.1
+# Install only if missing. Do not pin aggressive versions in this shared Forge environment.
+transformers
+huggingface_hub
+peft
+accelerate
+bitsandbytes
 safetensors
