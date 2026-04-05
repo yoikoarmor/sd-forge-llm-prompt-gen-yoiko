@@ -1,7 +1,11 @@
-# Install only if missing. Do not pin aggressive versions in this shared Forge environment.
-transformers
-huggingface_hub
-peft
-accelerate
-bitsandbytes
-safetensors
+# Tested dependency set for the current Qwen adapters on Forge.
+# These are pinned to avoid drift that can break either:
+# - Qwen3.5 loading, or
+# - Forge's Gradio / CLIP compatibility.
+transformers==5.5.0
+huggingface_hub==1.9.0
+peft==0.18.1
+accelerate==1.13.0
+bitsandbytes==0.48.1
+tokenizers==0.22.2
+safetensors>=0.7.0

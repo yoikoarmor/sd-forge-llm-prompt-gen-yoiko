@@ -1,7 +1,16 @@
 import inspect
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .compat import (
+    QWEN35_MIN_TRANSFORMERS,
+    apply_runtime_compat_shims,
+    format_dependency_versions,
+    get_dependency_versions,
+    transformers_supports_qwen35,
+)
 
 
 class MissingDependencyError(Exception):
@@ -447,7 +456,32 @@ def _load_tokenizer(AutoTokenizer, spec, adapter_report, base_reference, adapter
             cache_dir=spec.cache_dir,
         )
     except Exception as exc:
-        raise ModelLoadError(f"Failed to load tokenizer from '{tokenizer_load_path}': {exc}") from exc
+        _safe_log(
+            logger,
+            f"tokenizer_load_warning source={tokenizer_source} path={tokenizer_load_path} error={exc}",
+        )
+        if tokenizer_source != "base":
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    base_reference.resolved_reference,
+                    use_fast=bool(spec.use_fast_tokenizer),
+                    trust_remote_code=spec.trust_remote_code,
+                    local_files_only=True if base_reference.resolved_local_path else spec.local_files_only,
+                    cache_dir=spec.cache_dir,
+                )
+                tokenizer_load_path = base_reference.resolved_reference
+                tokenizer_source = "base_fallback"
+                _safe_log(
+                    logger,
+                    f"tokenizer_load_fallback source=base path={tokenizer_load_path}",
+                )
+            except Exception as fallback_exc:
+                raise ModelLoadError(
+                    f"Failed to load tokenizer from '{tokenizer_load_path}': {exc}. "
+                    f"Base tokenizer fallback also failed: {fallback_exc}"
+                ) from fallback_exc
+        else:
+            raise ModelLoadError(f"Failed to load tokenizer from '{tokenizer_load_path}': {exc}") from exc
 
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -560,6 +594,13 @@ def _extract_active_adapter(model):
     return active_adapter
 
 
+def _model_is_loaded_in_4bit(model):
+    return bool(
+        getattr(model, "is_loaded_in_4bit", False)
+        or getattr(getattr(model, "base_model", None), "is_loaded_in_4bit", False)
+    )
+
+
 def _inspect_model_state(model, PeftModel):
     peft_config = getattr(model, "peft_config", {})
     if isinstance(peft_config, dict):
@@ -632,6 +673,16 @@ def _log_load_debug(load_debug, logger):
     logger(f"adapter_download_started={load_debug['adapter_download_started']}")
     logger(f"adapter_download_finished={load_debug['adapter_download_finished']}")
     logger(f"adapter_download_failed={load_debug['adapter_download_failed']}")
+    logger(f"model_load_seconds={load_debug['model_load_seconds']:.3f}")
+    logger(
+        f"merge_lora_for_inference_requested={load_debug['merge_lora_for_inference_requested']}"
+    )
+    logger(
+        f"merge_lora_for_inference_applied={load_debug['merge_lora_for_inference_applied']}"
+    )
+    logger(f"merge_lora_seconds={load_debug['merge_lora_seconds']:.3f}")
+    logger(f"merge_lora_skipped_reason={load_debug['merge_lora_skipped_reason']}")
+    logger(f"quantization_fallback_used={load_debug['quantization_fallback_used']}")
     logger(f"base_model_class={load_debug['base_model_class']}")
     logger(f"final_model_class={load_debug['final_model_class']}")
     logger(f"is_peft_model={load_debug['is_peft_model']}")
@@ -656,14 +707,58 @@ def _log_load_debug(load_debug, logger):
     logger(f"pad_token={load_debug['pad_token']}")
     logger(f"tokenizer_use_fast={load_debug['tokenizer_use_fast']}")
 
-    if load_debug["adapter_path"] and not load_debug["is_peft_model"]:
+    if (
+        load_debug["adapter_path"]
+        and not load_debug["is_peft_model"]
+        and not load_debug["merged_state"]
+    ):
         logger("LORA_NOT_ACTIVE PEFT_MODEL_NOT_ATTACHED base model only inference")
 
 
+def _load_base_model_with_compat(
+    AutoModelForCausalLM,
+    reference: str,
+    model_kwargs: dict,
+    *,
+    logger=None,
+):
+    try:
+        return AutoModelForCausalLM.from_pretrained(reference, **model_kwargs)
+    except TypeError as exc:
+        if "dtype" not in model_kwargs:
+            raise
+        error_text = str(exc)
+        if "dtype" not in error_text or "unexpected keyword argument" not in error_text:
+            raise
+
+        legacy_kwargs = dict(model_kwargs)
+        legacy_kwargs["torch_dtype"] = legacy_kwargs.pop("dtype")
+        _safe_log(logger, "base_model_load_retry using torch_dtype compatibility path")
+        return AutoModelForCausalLM.from_pretrained(reference, **legacy_kwargs)
+
+
+def _should_retry_without_4bit(spec, exc: Exception):
+    if not spec.load_in_4bit:
+        return False
+    error_text = str(exc).lower()
+    return "bitsandbytes" in error_text and "4-bit" in error_text
+
+
 def load_model_bundle(spec, logger=None):
+    load_started_at = time.perf_counter()
+    apply_runtime_compat_shims(logger=logger)
     torch = _import_torch()
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig = _import_transformers()
     LoraConfig, PeftModel = _import_peft()
+
+    if "Qwen/Qwen3.5-" in str(spec.base_model_name_or_path) and not transformers_supports_qwen35():
+        installed = get_dependency_versions().get("transformers") or "<missing>"
+        raise ModelLoadError(
+            "Qwen3.5 models require a newer Transformers build. "
+            f"Installed transformers={installed}, required>={QWEN35_MIN_TRANSFORMERS}. "
+            "Run the extension install step once without --skip-install, or update the Forge venv to the pinned versions. "
+            f"Current dependency set: {format_dependency_versions()}"
+        )
 
     base_reference = _resolve_reference(
         spec.base_model_name_or_path,
@@ -727,13 +822,14 @@ def load_model_bundle(spec, logger=None):
             bnb_4bit_use_double_quant=bool(spec.use_double_quant),
         )
         model_kwargs["quantization_config"] = quantization_config
-        model_kwargs["torch_dtype"] = _resolve_dtype(torch, spec.torch_dtype)
+        model_kwargs["dtype"] = _resolve_dtype(torch, spec.torch_dtype)
     else:
-        model_kwargs["torch_dtype"] = _resolve_dtype(torch, spec.torch_dtype)
+        model_kwargs["dtype"] = _resolve_dtype(torch, spec.torch_dtype)
 
     base_download_started = False
     base_download_finished = False
     base_download_failed = False
+    quantization_fallback_used = False
 
     if base_reference.source == "huggingface":
         base_download_started = bool(base_reference.download_started)
@@ -747,12 +843,36 @@ def load_model_bundle(spec, logger=None):
             f"local_cache_hit={base_reference.local_cache_hit}",
         )
     try:
-        base_model_obj = AutoModelForCausalLM.from_pretrained(
+        base_model_obj = _load_base_model_with_compat(
+            AutoModelForCausalLM,
             base_reference.resolved_reference,
-            **model_kwargs,
+            model_kwargs,
+            logger=logger,
         )
     except Exception as exc:
-        if base_reference.source == "huggingface":
+        if _should_retry_without_4bit(spec, exc):
+            quantization_fallback_used = True
+            _safe_log(
+                logger,
+                "quantization_fallback reason=bitsandbytes_4bit_unavailable retry_without_4bit=True",
+            )
+            fallback_model_kwargs = dict(model_kwargs)
+            fallback_model_kwargs.pop("quantization_config", None)
+            try:
+                base_model_obj = _load_base_model_with_compat(
+                    AutoModelForCausalLM,
+                    base_reference.resolved_reference,
+                    fallback_model_kwargs,
+                    logger=logger,
+                )
+            except Exception as fallback_exc:
+                exc = fallback_exc
+            else:
+                exc = None
+
+        if exc is None:
+            pass
+        elif base_reference.source == "huggingface":
             base_download_failed = True
             _safe_log(
                 logger,
@@ -761,12 +881,17 @@ def load_model_bundle(spec, logger=None):
             raise ModelLoadError(
                 _format_hf_error(exc, "base_model", spec.base_model_name_or_path)
             ) from exc
-        raise ModelLoadError(f"Failed to load base model '{spec.base_model_name_or_path}': {exc}") from exc
+        else:
+            raise ModelLoadError(f"Failed to load base model '{spec.base_model_name_or_path}': {exc}") from exc
 
     base_model_class = type(base_model_obj).__name__
     model = base_model_obj
     adapter_config_loaded = False
     adapter_weights_loaded = False
+    merge_lora_for_inference_requested = bool(spec.merge_lora_for_inference)
+    merge_lora_for_inference_applied = False
+    merge_lora_seconds = 0.0
+    merge_lora_skipped_reason = "not_requested"
 
     if adapter_reference and adapter_reference.source != "none":
         adapter_config, _raw_config = _load_compatible_lora_config(
@@ -785,16 +910,45 @@ def load_model_bundle(spec, logger=None):
             raise ModelLoadError(
                 f"Failed to load adapter '{spec.adapter_path}': {exc}"
             ) from exc
+        if merge_lora_for_inference_requested:
+            if not hasattr(model, "merge_and_unload"):
+                merge_lora_skipped_reason = "merge_and_unload_unavailable"
+            elif _model_is_loaded_in_4bit(model):
+                merge_lora_skipped_reason = "quantized_model_loaded"
+            else:
+                merge_started_at = time.perf_counter()
+                try:
+                    model = model.merge_and_unload()
+                except Exception as exc:
+                    merge_lora_skipped_reason = "merge_failed"
+                    _safe_log(
+                        logger,
+                        f"merge_lora_for_inference_failed error={exc}",
+                    )
+                else:
+                    merge_lora_for_inference_applied = True
+                    merge_lora_seconds = time.perf_counter() - merge_started_at
+                    merge_lora_skipped_reason = None
+                    _safe_log(
+                        logger,
+                        "merge_lora_for_inference_applied "
+                        f"seconds={merge_lora_seconds:.3f}",
+                    )
+    elif merge_lora_for_inference_requested:
+        merge_lora_skipped_reason = "no_adapter"
 
     final_model_class = type(model).__name__
     model.eval()
 
     model_state = _inspect_model_state(model, PeftModel)
+    if merge_lora_for_inference_applied:
+        model_state["merged_state"] = True
+        model_state["active_adapter"] = "merged"
     adapter_weights_loaded = bool(
         adapter_reference
         and adapter_reference.source != "none"
         and adapter_report.get("adapter_model.safetensors", {}).get("readable")
-        and model_state["is_peft_model"]
+        and (model_state["is_peft_model"] or model_state["merged_state"])
     )
 
     load_debug = {
@@ -819,6 +973,12 @@ def load_model_bundle(spec, logger=None):
         "adapter_download_started": adapter_reference.download_started,
         "adapter_download_finished": adapter_reference.download_finished,
         "adapter_download_failed": adapter_reference.download_failed,
+        "model_load_seconds": time.perf_counter() - load_started_at,
+        "merge_lora_for_inference_requested": merge_lora_for_inference_requested,
+        "merge_lora_for_inference_applied": merge_lora_for_inference_applied,
+        "merge_lora_seconds": merge_lora_seconds,
+        "merge_lora_skipped_reason": merge_lora_skipped_reason,
+        "quantization_fallback_used": quantization_fallback_used,
         "adapter_config_loaded": adapter_config_loaded,
         "adapter_weights_loaded": adapter_weights_loaded,
         "adapter_files": adapter_report,

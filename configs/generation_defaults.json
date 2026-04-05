@@ -7,7 +7,8 @@
   "repetition_penalty": 1.0,
   "input_template_mode": "simple_chat_template",
   "cache_implementation": "dynamic",
-  "use_cache": false,
+  "use_cache": true,
+  "enable_thinking": false,
   "seed_mode": "random",
   "llm_seed": 42,
   "debug_compare_input_variants": false
