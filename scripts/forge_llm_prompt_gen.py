@@ -61,8 +61,6 @@ MAX_LOG_PROMPT_CHARS = 160
 DEFAULT_LLM_MODEL_CHOICES = [
     "none",
     "qwen2.5-7b-instruct",
-    "qwen3.5-4b",
-    "qwen3.5-9b",
 ]
 LLM_LOAD_MODE_CHOICES = [
     "keep_loaded",

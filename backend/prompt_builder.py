@@ -120,19 +120,11 @@ def _strip_wrapping_quotes(text):
     return text
 
 
-def _strip_leading_think_markup(text):
-    text = re.sub(r"^\s*<think>\s*</think>\s*", "", text, flags=re.DOTALL)
-    text = re.sub(r"^\s*<think>.*?</think>\s*", "", text, flags=re.DOTALL)
-    text = text.replace("<think>", " ").replace("</think>", " ")
-    return text.strip()
-
-
 def clean_generated_positive(text):
     text = normalize_model_output(text)
     if not text:
         return ""
 
-    text = _strip_leading_think_markup(text)
     text = _strip_known_prefix(text)
     text = _strip_wrapping_quotes(text.strip(" "))
     joined = text.replace("\n", ", ")

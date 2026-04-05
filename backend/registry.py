@@ -28,7 +28,6 @@ class ModelSpec:
     registry_source: str = "model_registry.json"
     enabled: bool = True
     load_in_4bit: bool = True
-    merge_lora_for_inference: bool = False
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_compute_dtype: str = "bfloat16"
     use_double_quant: bool = True
@@ -107,7 +106,7 @@ def _get_registry_data():
 
 
 def get_ui_model_choices(default_choices=None):
-    default_choices = default_choices or ["none", "qwen2.5-7b-instruct", "qwen3.5-4b", "qwen3.5-9b"]
+    default_choices = default_choices or ["none", "qwen2.5-7b-instruct"]
     try:
         registry_data = _get_registry_data()
         model_keys = list(registry_data.get("models", {}).keys())
@@ -152,7 +151,6 @@ def get_model_spec(model_key: str):
         registry_source=registry_data.get("_registry_source", MODEL_REGISTRY_PATH.name),
         enabled=entry.get("enabled", True),
         load_in_4bit=entry.get("load_in_4bit", True),
-        merge_lora_for_inference=entry.get("merge_lora_for_inference", False),
         bnb_4bit_quant_type=entry.get("bnb_4bit_quant_type", "nf4"),
         bnb_4bit_compute_dtype=entry.get("bnb_4bit_compute_dtype", "bfloat16"),
         use_double_quant=entry.get("use_double_quant", True),
@@ -179,7 +177,6 @@ def get_generation_defaults():
         "input_template_mode": str(data.get("input_template_mode", "simple_chat_template")),
         "cache_implementation": str(data.get("cache_implementation", "dynamic")),
         "use_cache": bool(data.get("use_cache", True)),
-        "enable_thinking": data.get("enable_thinking", False),
         "seed_mode": str(data.get("seed_mode", "random")),
         "llm_seed": int(data.get("llm_seed", 42)),
         "debug_compare_input_variants": bool(data.get("debug_compare_input_variants", False)),
