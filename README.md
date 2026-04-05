@@ -158,15 +158,76 @@ Example from the Forge root:
 git clone https://github.com/yoikoarmor/sd-forge-llm-prompt-gen-yoiko.git extensions/sd-forge-llm-prompt-gen-yoiko
 ```
 
-Then start Forge normally once.
+## Quick start
 
-Important:
+### Normal first launch
 
-- If you want the closest thing to "clone and go", do not use `--skip-install` on the first launch.
-- On a normal first launch, Forge will run the extension `install.py` step and prepare the required LLM stack automatically.
-- If you usually launch Forge with `--skip-install`, run `bootstrap_forge_env.bat` in this extension folder once before your first `--skip-install` launch.
+This is the recommended path.
 
-## Dependencies
+1. Clone the repo.
+2. Start Forge normally once.
+3. Let Forge run this extension's `install.py`.
+4. Copy `configs/model_registry.example.json` to `configs/model_registry.json`.
+5. Restart Forge and start generating.
+
+If you want the closest thing to "clone and go", do not use `--skip-install` on the first launch.
+
+### If you always use `--skip-install`
+
+Run this once before your first `--skip-install` launch:
+
+```text
+bootstrap_forge_env.bat
+```
+
+That one-time step installs the pinned LLM dependency set into the Forge venv and writes the compatibility shims needed for Forge's current environment.
+
+## Config setup
+
+Create your local runtime config by copying:
+
+```text
+configs/model_registry.example.json
+```
+
+to:
+
+```text
+configs/model_registry.json
+```
+
+`configs/model_registry.json` is intentionally gitignored so you can keep machine-local paths, cache settings, or private repo choices there.
+
+If `configs/model_registry.json` does not exist, the extension falls back to `configs/model_registry.example.json`.
+
+The example file already contains public Hugging Face entries for:
+
+- `qwen2.5-7b-instruct`
+- `qwen3.5-4b`
+- `qwen3.5-9b`
+
+Path rules:
+
+- If a value resolves to a local path, it is used as a local path.
+- If a value looks like `owner/model` and no local path exists, it is treated as a Hugging Face repo ID.
+- `cache_dir` is optional. If omitted, the standard Hugging Face cache is used.
+- If a local path is missing and `allow_auto_download_missing` is `true`, the extension can fall back to the matching `fallback_*` Hugging Face reference at LLM runtime.
+
+## Published model IDs
+
+Recommended public setup:
+
+- base: `Qwen/Qwen2.5-7B-Instruct`
+- adapter: `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
+
+Additional public adapters:
+
+- `Qwen/Qwen3.5-4B` + `yoikoarmor/yoiko-Qwen3.5-4B-lora`
+- `Qwen/Qwen3.5-9B` + `yoikoarmor/yoiko-Qwen3.5-9B-lora`
+
+On the first run, the extension can download both the base model and the adapter from Hugging Face. Large first-time downloads are expected.
+
+## Dependency notes
 
 The extension uses `install.py` and `requirements.txt` to request missing packages inside the Forge environment.
 
@@ -183,196 +244,12 @@ Pinned dependency set used for the current public adapters:
 Notes:
 
 - `bitsandbytes` support depends on your platform and CUDA setup.
-- This beta is primarily aimed at local NVIDIA GPU environments where 4-bit inference is available.
 - The `Qwen/Qwen3.5` paths need a recent `transformers` / `peft` / `bitsandbytes` stack, including a 1.x `huggingface_hub`.
-- Forge's current Gradio stack still imports the removed `HfFolder` symbol, so `install.py` also adds a startup compatibility shim for `huggingface_hub >= 1.x`.
-- The extension also applies an in-process runtime compatibility patch for the CLIP causal mask path used by Forge text encoders.
-- The extension install step can upgrade older Forge venv packages when needed and keep that compatibility shim in place.
+- Forge's current Gradio stack still imports the removed `HfFolder` symbol, so `install.py` writes compatibility patches during setup.
+- The extension also applies a runtime compatibility patch for the CLIP causal mask path used by Forge text encoders.
 - If Forge pins an older `bitsandbytes` build at startup, the extension can retry in non-4bit mode instead of aborting the LLM call immediately.
-- On the Windows + RTX 5090 setup used during beta validation, `bitsandbytes 0.48.1` was the first version that consistently allowed real 4-bit loading with the current `transformers` stack.
-
-## First-time setup
-
-### 0. Run the dependency bootstrap once
-
-If this is a fresh GitHub download and your Forge launcher uses `--skip-install`, run:
-
-```text
-bootstrap_forge_env.bat
-```
-
-That one-time step installs the pinned LLM dependency set into the Forge venv and writes the startup compatibility shim that keeps `gradio` working with `huggingface_hub 1.x`.
-
-### 1. Copy the example config
-
-Create your local runtime config by copying:
-
-```text
-configs/model_registry.example.json
-```
-
-to:
-
-```text
-configs/model_registry.json
-```
-
-`configs/model_registry.json` is intentionally gitignored so you can keep machine-local paths, cache settings, or private repo choices there.
-
-If `configs/model_registry.json` does not exist, the extension will fall back to `configs/model_registry.example.json`.
-The example includes ready-to-edit public Hugging Face entries for `qwen2.5-7b-instruct`, `qwen3.5-4b`, and `qwen3.5-9b`.
-
-### 2. Edit `configs/model_registry.json`
-
-Set your own base model and adapter references.
-
-Example:
-
-```json
-{
-  "models": {
-    "qwen2.5-7b-instruct": {
-      "enabled": true,
-      "description": "Published Hugging Face adapter example for Qwen/Qwen2.5-7B-Instruct",
-      "base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
-      "adapter_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
-      "tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
-      "cache_dir": null,
-      "fallback_base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct",
-      "fallback_adapter_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
-      "fallback_tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora",
-      "allow_auto_download_missing": true,
-      "load_in_4bit": true,
-      "merge_lora_for_inference": false,
-      "bnb_4bit_quant_type": "nf4",
-      "bnb_4bit_compute_dtype": "bfloat16",
-      "use_double_quant": true,
-      "device_map": "auto",
-      "torch_dtype": "bfloat16",
-      "trust_remote_code": false,
-      "local_files_only": false,
-      "tokenizer_source": "adapter",
-      "chat_template_source": "adapter",
-      "use_fast_tokenizer": true
-    },
-    "qwen3.5-4b": {
-      "enabled": true,
-      "description": "Published Hugging Face adapter example for Qwen/Qwen3.5-4B with yoikoarmor/yoiko-Qwen3.5-4B-lora. On a high-VRAM GPU, load_in_4bit=false together with merge_lora_for_inference=true can be faster.",
-      "base_model_name_or_path": "Qwen/Qwen3.5-4B",
-      "adapter_path": "yoikoarmor/yoiko-Qwen3.5-4B-lora",
-      "tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen3.5-4B-lora",
-      "cache_dir": null,
-      "fallback_base_model_name_or_path": "Qwen/Qwen3.5-4B",
-      "fallback_adapter_path": "yoikoarmor/yoiko-Qwen3.5-4B-lora",
-      "fallback_tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen3.5-4B-lora",
-      "allow_auto_download_missing": true,
-      "load_in_4bit": true,
-      "merge_lora_for_inference": false,
-      "bnb_4bit_quant_type": "nf4",
-      "bnb_4bit_compute_dtype": "bfloat16",
-      "use_double_quant": true,
-      "device_map": "auto",
-      "torch_dtype": "bfloat16",
-      "trust_remote_code": false,
-      "local_files_only": false,
-      "tokenizer_source": "adapter",
-      "chat_template_source": "adapter",
-      "use_fast_tokenizer": true
-    },
-    "qwen3.5-9b": {
-      "enabled": true,
-      "description": "Published Hugging Face adapter example for Qwen/Qwen3.5-9B with yoikoarmor/yoiko-Qwen3.5-9B-lora. On a high-VRAM GPU, load_in_4bit=false together with merge_lora_for_inference=true can be faster.",
-      "base_model_name_or_path": "Qwen/Qwen3.5-9B",
-      "adapter_path": "yoikoarmor/yoiko-Qwen3.5-9B-lora",
-      "tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen3.5-9B-lora",
-      "cache_dir": null,
-      "fallback_base_model_name_or_path": "Qwen/Qwen3.5-9B",
-      "fallback_adapter_path": "yoikoarmor/yoiko-Qwen3.5-9B-lora",
-      "fallback_tokenizer_name_or_path": "yoikoarmor/yoiko-Qwen3.5-9B-lora",
-      "allow_auto_download_missing": true,
-      "load_in_4bit": true,
-      "merge_lora_for_inference": false,
-      "bnb_4bit_quant_type": "nf4",
-      "bnb_4bit_compute_dtype": "bfloat16",
-      "use_double_quant": true,
-      "device_map": "auto",
-      "torch_dtype": "bfloat16",
-      "trust_remote_code": false,
-      "local_files_only": false,
-      "tokenizer_source": "adapter",
-      "chat_template_source": "adapter",
-      "use_fast_tokenizer": true
-    }
-  }
-}
-```
-
-Path rules in this beta:
-
-- If the value resolves to a local path, it is used as a local path
-- If the value looks like `owner/model` and no local path exists, it is treated as a Hugging Face repo ID
-- `cache_dir` is optional; if omitted, the standard Hugging Face cache is used
-- `merge_lora_for_inference` is optional; when `true`, the extension tries to merge the loaded LoRA into the base model after attach if the model is not currently loaded in 4bit mode
-- If a local path is configured but missing, and `allow_auto_download_missing` is `true`, the extension can fall back to the matching `fallback_*` Hugging Face reference at LLM execution time
-- `qwen2.5-7b-instruct` is ready to use with the published Hugging Face adapter
-- `qwen3.5-4b` is ready to use with the published Hugging Face adapter and still supports local overrides
-- `qwen3.5-9b` is ready to use with the published Hugging Face adapter and still supports local overrides
-
-### 3. Recommended beta setup
-
-Recommended public setup:
-
-- base model: `Qwen/Qwen2.5-7B-Instruct`
-  - https://huggingface.co/Qwen/Qwen2.5-7B-Instruct
-- adapter: `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
-  - https://huggingface.co/yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora
-
-Optional second model setup:
-
-- base model: `Qwen/Qwen3.5-4B`
-- adapter: `yoikoarmor/yoiko-Qwen3.5-4B-lora`
-  - https://huggingface.co/yoikoarmor/yoiko-Qwen3.5-4B-lora
-
-Optional third model setup:
-
-- base model: `Qwen/Qwen3.5-9B`
-- adapter: `yoikoarmor/yoiko-Qwen3.5-9B-lora`
-  - https://huggingface.co/yoikoarmor/yoiko-Qwen3.5-9B-lora
-
-On the first run, the extension can download both the base model and the adapter from Hugging Face.
-Large first-time downloads are expected.
-
-### 4. Hugging Face downloads and cache
-
-This extension now supports automatic retrieval for both:
-
-- `base_model_name_or_path`
-- `adapter_path`
-
-When either field is set to a Hugging Face repo ID, the extension uses standard Hugging Face cache behavior through `transformers`, `peft`, and `huggingface_hub`.
-
-Recommended beta defaults:
-
-- primary public model: `Qwen/Qwen2.5-7B-Instruct`
-- primary public adapter: `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
-- optional second model: `Qwen/Qwen3.5-4B`
-- optional second adapter: `yoikoarmor/yoiko-Qwen3.5-4B-lora`
-- optional third model: `Qwen/Qwen3.5-9B`
-- optional third adapter: `yoikoarmor/yoiko-Qwen3.5-9B-lora`
-- tokenizer source: adapter
-- chat template source: adapter
-- generation cache: enabled during each LLM call and cleared immediately after generation
-
-Notes:
-
-- the first run may take a while
-- on the first run, the extension now waits for the full base-model snapshot download to finish before prompt generation returns control to Forge
-- repeated runs should reuse the Hugging Face cache
-- if `local_files_only` is `true`, uncached remote IDs will fail instead of downloading
-- private or gated repos may require authentication
-- this beta is designed so GitHub-distributed code can still recover by downloading weights at LLM runtime if local files are absent and fallback references are configured
-- for Qwen 3.5-family templates, this repo now defaults to `enable_thinking = false` to reduce reasoning-style output leakage
-- on the tested Windows environment, `Qwen/Qwen3.5-4B` and `Qwen/Qwen3.5-9B` can still be sensitive to Qwen 3.5 fast-path availability; keep `use_cache = true`, and if 4bit is slower than expected on your setup, try `load_in_4bit = false` together with `merge_lora_for_inference = true` for the affected entry
+- For Qwen 3.5-family templates, the default is `enable_thinking = false`.
+- On some high-VRAM Windows setups, `Qwen/Qwen3.5-4B` and `Qwen/Qwen3.5-9B` can be faster with `load_in_4bit = false` and `merge_lora_for_inference = true`.
 
 ## LoRA distribution policy
 
@@ -638,5 +515,168 @@ If you open an issue, please include:
 - relevant logs
 - your `generation_defaults.json` changes, if any
 - whether you are using local paths or remote model IDs
-#   s d - f o r g e - l l m - p r o m p t - g e n - y o i k o - t e s t  
- 
+
+---
+
+## Japanese guide
+
+### 概要
+
+この拡張は、Forge の `txt2img` / `img2img` に小さな LLM パネルを追加し、`Gen Prompt` を画像生成向けの positive prompt に書き換えます。
+
+- `Gen Prompt` を LLM に渡して positive prompt を生成
+- Forge 標準の `Prompt (Optional)` はそのまま保持
+- Forge 標準の `Negative prompt` は変更せずそのまま使用
+
+LLM 生成が成功したときの基本ルールは次のとおりです。
+
+```text
+final_positive = processed_gen_prompt + ", " + original_prompt
+final_negative = negative_prompt
+```
+
+`Prompt (Optional)` が空の場合、最終 positive prompt は LLM の出力のみになります。  
+LLM 出力が弱すぎる、または空の場合は `Gen Prompt` にフォールバックします。
+
+### このリポジトリに含まれるもの
+
+このリポジトリには Forge 拡張コードのみが含まれます。  
+以下は含みません。
+
+- base model weights
+- LoRA / adapter weights
+- training artifacts
+- ローカル専用の `artifacts/`
+
+モデル本体と LoRA は `configs/model_registry.json` で別途指定してください。  
+ローカルパスでも Hugging Face repo ID でも指定できます。
+
+### 現在の対応モデル
+
+- `qwen2.5-7b-instruct`
+  - base model: `Qwen/Qwen2.5-7B-Instruct`
+  - public LoRA: `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
+- `qwen3.5-4b`
+  - base model: `Qwen/Qwen3.5-4B`
+  - public LoRA: `yoikoarmor/yoiko-Qwen3.5-4B-lora`
+- `qwen3.5-9b`
+  - base model: `Qwen/Qwen3.5-9B`
+  - public LoRA: `yoikoarmor/yoiko-Qwen3.5-9B-lora`
+
+### 導入手順
+
+Forge の `extensions/` にこのリポジトリを clone してください。
+
+```bash
+git clone https://github.com/yoikoarmor/sd-forge-llm-prompt-gen-yoiko.git extensions/sd-forge-llm-prompt-gen-yoiko
+```
+
+### 最短の初回導入
+
+いちばんおすすめの流れです。
+
+1. リポジトリを clone する
+2. Forge を `--skip-install` なしで一度だけ通常起動する
+3. この拡張の `install.py` を実行させる
+4. `configs/model_registry.example.json` を `configs/model_registry.json` にコピーする
+5. base model と adapter を設定する
+6. Forge を再起動して使い始める
+
+「clone 後すぐ使える」に一番近いのは、この通常初回起動ルートです。
+
+### `--skip-install` を常用する場合
+
+初回だけ先に次を実行してください。
+
+```text
+bootstrap_forge_env.bat
+```
+
+これで Forge venv に必要な依存と互換パッチを入れます。  
+その後は `--skip-install` 起動に戻して大丈夫です。
+
+### 設定ファイル
+
+まず次をコピーします。
+
+```text
+configs/model_registry.example.json
+```
+
+コピー先:
+
+```text
+configs/model_registry.json
+```
+
+`configs/model_registry.json` は gitignore 対象です。  
+マシン固有のローカルパスや private repo 設定はここに書いてください。
+
+ルールは次のとおりです。
+
+- ローカルパスとして存在する場合はローカルパスとして使用
+- `owner/model` 形式でローカルに存在しない場合は Hugging Face repo ID として扱う
+- `cache_dir` は省略可
+- ローカルパスが見つからず `allow_auto_download_missing = true` の場合、対応する `fallback_*` の Hugging Face 参照へフォールバック可能
+
+### 公開済み Hugging Face LoRA
+
+公開済み adapter は次の 3 つです。
+
+- `yoikoarmor/yoiko-Qwen2.5-7B-Instruct-lora`
+- `yoikoarmor/yoiko-Qwen3.5-4B-lora`
+- `yoikoarmor/yoiko-Qwen3.5-9B-lora`
+
+初回は base model と adapter のダウンロードが入るため、時間とディスク容量が必要です。
+
+### 依存関係と互換性
+
+この拡張は `install.py` と `requirements.txt` を使って、Forge 環境に必要な依存を揃えます。  
+現在の公開 adapter で想定している主なバージョンは次のとおりです。
+
+- `transformers == 5.5.0`
+- `huggingface_hub == 1.9.0`
+- `peft == 0.18.1`
+- `accelerate == 1.13.0`
+- `bitsandbytes == 0.48.1`
+- `tokenizers == 0.22.2`
+- `safetensors >= 0.7.0`
+
+補足:
+
+- `Qwen/Qwen3.5-*` は新しめの `transformers` 系依存が必要です
+- Forge 側との互換性のため、初回セットアップ時に互換パッチを自動で入れます
+- Forge が古い `bitsandbytes` を保持した場合でも、拡張側で non-4bit fallback を試みます
+- `Qwen 3.5` 系では既定で `enable_thinking = false` です
+
+### よくある確認ポイント
+
+うまく動かないときは、まず次を確認してください。
+
+- Forge を `extensions/` 配下に clone したか
+- 初回に Forge を通常起動したか
+- `configs/model_registry.json` を作ったか
+- base model と adapter の参照先が正しいか
+
+ログでは次の項目が重要です。
+
+- `llm_load_config`
+- `resolved_base_model_reference`
+- `resolved_adapter_reference`
+- `model_load_seconds`
+- `llm_generate_seconds`
+- `quantization_fallback_used`
+- `final_positive_after_dedupe`
+
+### 既知の制限
+
+- まだ beta / experimental 段階です
+- 一部のモデルや adapter では prompt shaping の微調整が必要です
+- 初回の Hugging Face ダウンロードは重い場合があります
+- オフライン利用には事前キャッシュまたはローカル配置が必要です
+- Windows では Hugging Face cache の symlink 警告が出ることがあります
+
+### ライセンス
+
+このリポジトリ内の拡張コードは `AGPL-3.0-or-later` です。  
+base model や LoRA / adapter weight は同梱しておらず、各 weight package のライセンスは別途確認してください。
