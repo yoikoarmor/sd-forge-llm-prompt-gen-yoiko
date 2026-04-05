@@ -34,6 +34,7 @@ def _load_backend_package():
 
 _load_backend_package()
 
+compat_module = import_module(f"{BACKEND_PACKAGE_NAME}.compat")
 generator_module = import_module(f"{BACKEND_PACKAGE_NAME}.generator")
 loader_module = import_module(f"{BACKEND_PACKAGE_NAME}.loader")
 prompt_builder_module = import_module(f"{BACKEND_PACKAGE_NAME}.prompt_builder")
@@ -42,6 +43,7 @@ runtime_module = import_module(f"{BACKEND_PACKAGE_NAME}.runtime")
 
 GenerationError = generator_module.GenerationError
 generate_prompt_candidates = generator_module.generate_prompt_candidates
+apply_runtime_compat_shims = compat_module.apply_runtime_compat_shims
 MissingDependencyError = loader_module.MissingDependencyError
 ModelLoadError = loader_module.ModelLoadError
 build_final_positive = prompt_builder_module.build_final_positive
@@ -61,6 +63,8 @@ MAX_LOG_PROMPT_CHARS = 160
 DEFAULT_LLM_MODEL_CHOICES = [
     "none",
     "qwen2.5-7b-instruct",
+    "qwen3.5-4b",
+    "qwen3.5-9b",
 ]
 LLM_LOAD_MODE_CHOICES = [
     "keep_loaded",
@@ -69,6 +73,7 @@ LLM_LOAD_MODE_CHOICES = [
 
 
 print(f"{LOG_PREFIX} extension script loaded")
+apply_runtime_compat_shims(logger=lambda message: print(f"{LOG_PREFIX} {message}"))
 
 
 @dataclass

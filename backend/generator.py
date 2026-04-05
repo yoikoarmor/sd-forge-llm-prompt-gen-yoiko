@@ -1,5 +1,7 @@
 import gc
+import re
 import secrets
+import time
 from dataclasses import dataclass, field
 
 from .prompt_builder import (
@@ -30,6 +32,7 @@ class PreparedInput:
     chat_template_used: bool
     system_prompt_preview: str
     user_prompt_preview: str
+    empty_think_block_stripped: bool = False
 
 
 @dataclass
@@ -46,6 +49,7 @@ class GenerationResult:
     seed_mode: str = "random"
     input_debug: dict = field(default_factory=dict)
     interrupted: bool = False
+    generate_seconds: float = 0.0
 
 
 def _import_torch():
@@ -74,6 +78,20 @@ def _truncate(value, max_chars=400):
     return value
 
 
+def _strip_empty_think_block(prompt_text, *, enable_thinking):
+    if enable_thinking or not prompt_text:
+        return prompt_text, False
+
+    stripped = re.sub(
+        r"(<\|im_start\|>assistant\s*)<think>\s*</think>\s*",
+        r"\1",
+        prompt_text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    return stripped, stripped != prompt_text
+
+
 def _build_input_payload(input_template_mode, gen_prompt, original_prompt, negative_prompt):
     mode = (input_template_mode or "simple_chat_template").strip().lower()
     if mode == "forge_prompt_builder":
@@ -94,7 +112,15 @@ def _build_input_payload(input_template_mode, gen_prompt, original_prompt, negat
     }
 
 
-def _prepare_inputs(tokenizer, model, *, messages=None, plain_text=None, input_template_mode="simple_chat_template"):
+def _prepare_inputs(
+    tokenizer,
+    model,
+    *,
+    messages=None,
+    plain_text=None,
+    input_template_mode="simple_chat_template",
+    enable_thinking=False,
+):
     prompt_text = None
     input_mode = "plain_text"
     chat_template_used = False
@@ -110,11 +136,17 @@ def _prepare_inputs(tokenizer, model, *, messages=None, plain_text=None, input_t
 
     if messages is not None and hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
         try:
-            prompt_text = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            chat_template_kwargs = {
+                "tokenize": False,
+                "add_generation_prompt": True,
+            }
+            if enable_thinking is not None:
+                chat_template_kwargs["enable_thinking"] = enable_thinking
+            try:
+                prompt_text = tokenizer.apply_chat_template(messages, **chat_template_kwargs)
+            except TypeError:
+                chat_template_kwargs.pop("enable_thinking", None)
+                prompt_text = tokenizer.apply_chat_template(messages, **chat_template_kwargs)
             input_mode = input_template_mode
             chat_template_used = True
         except Exception:
@@ -131,6 +163,11 @@ def _prepare_inputs(tokenizer, model, *, messages=None, plain_text=None, input_t
         prompt_text = "\n\n".join(f"{item['role'].upper()}:\n{item['content']}" for item in messages)
         prompt_text += "\n\nASSISTANT:\n"
         input_mode = "prompt_builder_fallback"
+
+    prompt_text, empty_think_block_stripped = _strip_empty_think_block(
+        prompt_text,
+        enable_thinking=enable_thinking,
+    )
 
     encoded = tokenizer(prompt_text, return_tensors="pt")
     device = _get_model_device(model)
@@ -152,6 +189,7 @@ def _prepare_inputs(tokenizer, model, *, messages=None, plain_text=None, input_t
         chat_template_used=chat_template_used,
         system_prompt_preview=system_prompt_preview,
         user_prompt_preview=user_prompt_preview,
+        empty_think_block_stripped=empty_think_block_stripped,
     )
 
 
@@ -254,6 +292,7 @@ def _log_generation_context(
     original_prompt_injected_to_llm,
     llm_seed,
     seed_mode,
+    enable_thinking,
 ):
     if not logger:
         return
@@ -264,11 +303,13 @@ def _log_generation_context(
     _safe_log(logger, f"negative_prompt_raw={negative_prompt}")
     _safe_log(logger, f"seed_mode={seed_mode}")
     _safe_log(logger, f"llm_seed={llm_seed}")
+    _safe_log(logger, f"enable_thinking={enable_thinking}")
     _safe_log(logger, f"input_template_mode={input_template_mode}")
     _safe_log(logger, f"original_prompt_injected_to_llm={original_prompt_injected_to_llm}")
     _safe_log(logger, f"llm_input_mode={prepared_input.input_mode}")
     _safe_log(logger, f"llm_input_chat_template_used={prepared_input.chat_template_used}")
     _safe_log(logger, f"llm_input_chat_template_source={load_debug.get('chat_template_source')}")
+    _safe_log(logger, f"llm_input_empty_think_block_stripped={prepared_input.empty_think_block_stripped}")
     _safe_log(logger, f"system_prompt_preview={_truncate(prepared_input.system_prompt_preview, 240)}")
     _safe_log(logger, f"user_prompt_preview={_truncate(prepared_input.user_prompt_preview, 240)}")
     _safe_log(logger, "llm_input_text_full_start")
@@ -306,6 +347,7 @@ def debug_compare_prompt_variants(
     comparison_kwargs = dict(generation_kwargs)
     comparison_kwargs["max_new_tokens"] = min(int(comparison_kwargs.get("max_new_tokens", 128)), 64)
     llm_seed, seed_mode = _resolve_llm_seed(generation_defaults)
+    enable_thinking = generation_defaults.get("enable_thinking", False)
     _apply_llm_seed(torch, llm_seed)
 
     variants = [
@@ -335,6 +377,7 @@ def debug_compare_prompt_variants(
                 messages=variant["payload"]["messages"],
                 plain_text=variant["payload"]["plain_text"],
                 input_template_mode=variant["payload"]["input_template_mode"],
+                enable_thinking=enable_thinking,
             )
             outputs = _generate_once(model, prepared.encoded, comparison_kwargs, torch)
             generated_tokens = outputs[0][prepared.encoded["input_ids"].shape[1]:]
@@ -383,12 +426,14 @@ def generate_prompt_candidates(
     model = bundle.model
     tokenizer = bundle.tokenizer
     llm_seed, seed_mode = _resolve_llm_seed(generation_defaults)
+    enable_thinking = generation_defaults.get("enable_thinking", False)
     prepared_input = _prepare_inputs(
         tokenizer,
         model,
         messages=payload["messages"],
         plain_text=payload["plain_text"],
         input_template_mode=payload["input_template_mode"],
+        enable_thinking=enable_thinking,
     )
     generation_kwargs = _build_generation_kwargs(tokenizer, generation_defaults)
     _apply_llm_seed(torch, llm_seed)
@@ -405,6 +450,7 @@ def generate_prompt_candidates(
         original_prompt_injected_to_llm=payload["original_prompt_injected_to_llm"],
         llm_seed=llm_seed,
         seed_mode=seed_mode,
+        enable_thinking=enable_thinking,
     )
 
     if generation_defaults.get("debug_compare_input_variants", False):
@@ -433,10 +479,12 @@ def generate_prompt_candidates(
                 "generation_kwargs": generation_kwargs,
                 "llm_seed": llm_seed,
                 "seed_mode": seed_mode,
+                "enable_thinking": enable_thinking,
             },
             interrupted=True,
         )
 
+    started_at = time.perf_counter()
     try:
         output_ids = _generate_once(model, prepared_input.encoded, generation_kwargs, torch)
         generated_tokens = output_ids[0][prepared_input.encoded["input_ids"].shape[1]:]
@@ -446,6 +494,8 @@ def generate_prompt_candidates(
         usable, reject_reason = is_generated_prompt_strong_enough(cleaned_output)
     finally:
         _clear_generation_state(torch)
+    generate_seconds = time.perf_counter() - started_at
+    _safe_log(logger, f"llm_generate_seconds={generate_seconds:.3f}")
 
     debug_entry = _make_candidate_debug(
         index=0,
@@ -484,6 +534,9 @@ def generate_prompt_candidates(
             "generation_kwargs": generation_kwargs,
             "llm_seed": llm_seed,
             "seed_mode": seed_mode,
+            "enable_thinking": enable_thinking,
+            "empty_think_block_stripped": prepared_input.empty_think_block_stripped,
         },
         interrupted=False,
+        generate_seconds=generate_seconds,
     )
