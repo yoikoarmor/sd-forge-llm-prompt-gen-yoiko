@@ -9,25 +9,25 @@
 
 現行の主対象:
 
-- Forge 拡張コード: `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko`
+- Forge 拡張コード: `extensions/sd-forge-llm-prompt-gen-yoiko`
 - base model: `Qwen/Qwen3.5-4B`
 - 公開 LoRA adapter: `yoikoarmor/yoiko-Qwen3.5-4B-lora`
 
 ## 2. 主要ファイル
 
 - 拡張 UI / Forge フック:
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\scripts\forge_llm_prompt_gen.py`
+  - `scripts/forge_llm_prompt_gen.py`
 - model registry:
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\configs\model_registry.example.json`
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\configs\model_registry.json`
+  - `configs/model_registry.example.json`
+  - `configs/model_registry.json`
 - generation defaults:
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\configs\generation_defaults.json`
+  - `configs/generation_defaults.json`
 - backend:
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\backend\registry.py`
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\backend\loader.py`
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\backend\runtime.py`
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\backend\generator.py`
-  - `D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\backend\prompt_builder.py`
+  - `backend/registry.py`
+  - `backend/loader.py`
+  - `backend/runtime.py`
+  - `backend/generator.py`
+  - `backend/prompt_builder.py`
 
 ## 3. UI 仕様
 
@@ -251,7 +251,7 @@ unload 時の処理:
 
 ## 10. generation_defaults.json の現行既定値
 
-`D:\stablematrix\Data\Packages\forge-test\extensions\sd-forge-llm-prompt-gen-yoiko\configs\generation_defaults.json`
+`configs/generation_defaults.json`
 
 現行値:
 
