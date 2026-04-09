@@ -27,6 +27,7 @@ TF_MODELING_MARKER_START = "# BEGIN sd-forge-llm-prompt-gen-yoiko transformers m
 TF_MODELING_MARKER_END = "# END sd-forge-llm-prompt-gen-yoiko transformers modeling compat"
 TF_MASK_MARKER_START = "# BEGIN sd-forge-llm-prompt-gen-yoiko transformers mask compat"
 TF_MASK_MARKER_END = "# END sd-forge-llm-prompt-gen-yoiko transformers mask compat"
+TORCH_MIN_FOR_MODERN_PROFILE = Version("2.4.0")
 
 
 def iter_requirements(requirements_path: Path):
@@ -39,6 +40,23 @@ def iter_requirements(requirements_path: Path):
 
 def parse_requirement(requirement: str):
     return Requirement(requirement)
+
+
+def parse_installed_version(value: str | None):
+    if not value:
+        return None
+    normalized = str(value).split("+", 1)[0].strip()
+    try:
+        return Version(normalized)
+    except InvalidVersion:
+        return None
+
+
+def get_installed_version(name: str):
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
 
 
 def is_requirement_satisfied(requirement: Requirement):
@@ -84,6 +102,27 @@ def get_site_package_path(*parts: str):
     fallback_root = Path(site.getsitepackages()[-1])
     fallback_root.mkdir(parents=True, exist_ok=True)
     return fallback_root.joinpath(*parts)
+
+
+def select_requirements_path():
+    default_path = Path(__file__).with_name("requirements.txt")
+    legacy_path = Path(__file__).with_name("requirements.legacy.txt")
+
+    torch_version_raw = get_installed_version("torch")
+    torch_version = parse_installed_version(torch_version_raw)
+
+    if torch_version is not None and torch_version < TORCH_MIN_FOR_MODERN_PROFILE and legacy_path.exists():
+        return legacy_path, {
+            "profile": "legacy",
+            "reason": f"torch<{TORCH_MIN_FOR_MODERN_PROFILE}",
+            "torch_version": torch_version_raw,
+        }
+
+    return default_path, {
+        "profile": "modern",
+        "reason": "default",
+        "torch_version": torch_version_raw or "<missing>",
+    }
 
 
 def ensure_file_contains_patch(path: Path, marker_start: str, marker_end: str, patch_text: str):
@@ -352,9 +391,17 @@ _patch_transformers_attention_mask_compat()
 
 
 def main():
-    requirements_path = Path(__file__).with_name("requirements.txt")
+    requirements_path, profile_info = select_requirements_path()
+    print(
+        f"{LOG_PREFIX} install profile "
+        f"profile={profile_info['profile']} "
+        f"reason={profile_info['reason']} "
+        f"torch={profile_info['torch_version']} "
+        f"requirements={requirements_path.name}"
+    )
+
     if not requirements_path.exists():
-        print(f"{LOG_PREFIX} requirements.txt not found; skipping install step")
+        print(f"{LOG_PREFIX} {requirements_path.name} not found; skipping install step")
         return
 
     for requirement in iter_requirements(requirements_path):

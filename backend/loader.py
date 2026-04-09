@@ -6,9 +6,11 @@ from pathlib import Path
 
 from .compat import (
     QWEN35_MIN_TRANSFORMERS,
+    TORCH_MIN_FOR_QWEN35,
     apply_runtime_compat_shims,
     format_dependency_versions,
     get_dependency_versions,
+    torch_supports_modern_transformers,
     transformers_supports_qwen35,
 )
 
@@ -683,6 +685,13 @@ def _log_load_debug(load_debug, logger):
     logger(f"merge_lora_seconds={load_debug['merge_lora_seconds']:.3f}")
     logger(f"merge_lora_skipped_reason={load_debug['merge_lora_skipped_reason']}")
     logger(f"quantization_fallback_used={load_debug['quantization_fallback_used']}")
+    logger(f"model_load_type_requested={load_debug['model_load_type_requested']}")
+    logger(f"model_load_type_effective={load_debug['model_load_type_effective']}")
+    logger(f"model_load_type_reason={load_debug['model_load_type_reason']}")
+    logger(f"model_load_total_vram_gib={load_debug['model_load_total_vram_gib']}")
+    logger(f"cpu_offload_retry_used={load_debug['cpu_offload_retry_used']}")
+    logger(f"cpu_offload_folder={load_debug['cpu_offload_folder']}")
+    logger(f"cpu_offload_max_memory={load_debug['cpu_offload_max_memory']}")
     logger(f"base_model_class={load_debug['base_model_class']}")
     logger(f"final_model_class={load_debug['final_model_class']}")
     logger(f"is_peft_model={load_debug['is_peft_model']}")
@@ -744,6 +753,148 @@ def _should_retry_without_4bit(spec, exc: Exception):
     return "bitsandbytes" in error_text and "4-bit" in error_text
 
 
+def _is_low_vram_dispatch_error(exc: Exception):
+    error_text = str(exc).lower()
+    markers = (
+        "some modules are dispatched on the cpu or the disk",
+        "make sure you have enough gpu ram to fit the quantized model",
+        "llm_int8_enable_fp32_cpu_offload=true",
+    )
+    return any(marker in error_text for marker in markers)
+
+
+def _should_retry_with_cpu_offload(spec, exc: Exception):
+    return bool(spec.load_in_4bit) and _is_low_vram_dispatch_error(exc)
+
+
+def _detect_available_cpu_memory_bytes():
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+
+    try:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullAvailPhys)
+    except Exception:
+        pass
+
+    return None
+
+
+def _format_mib_string(num_bytes: int | None):
+    if not num_bytes or num_bytes <= 0:
+        return None
+    mib = max(1, int(num_bytes // (1024 * 1024)))
+    return f"{mib}MiB"
+
+
+def _build_low_vram_max_memory(torch):
+    max_memory = {}
+
+    try:
+        if torch.cuda.is_available():
+            total_vram = int(torch.cuda.get_device_properties(0).total_memory)
+            reserve = max(768 * 1024 * 1024, total_vram // 10)
+            gpu_budget = max(1024 * 1024 * 1024, total_vram - reserve)
+            gpu_budget_string = _format_mib_string(gpu_budget)
+            if gpu_budget_string:
+                max_memory[0] = gpu_budget_string
+    except Exception:
+        pass
+
+    cpu_available = _detect_available_cpu_memory_bytes()
+    cpu_budget_string = _format_mib_string(cpu_available)
+    if cpu_budget_string:
+        max_memory["cpu"] = cpu_budget_string
+
+    return max_memory or None
+
+
+def _build_cpu_offload_retry_kwargs(spec, model_kwargs, BitsAndBytesConfig, torch):
+    retry_kwargs = dict(model_kwargs)
+    retry_kwargs["device_map"] = "auto"
+    retry_kwargs["offload_state_dict"] = True
+    retry_kwargs["offload_buffers"] = True
+
+    max_memory = _build_low_vram_max_memory(torch)
+    if max_memory:
+        retry_kwargs["max_memory"] = max_memory
+
+    offload_folder = Path(_build_staging_dir(spec.cache_dir, "offload", spec.base_model_name_or_path))
+    offload_folder.mkdir(parents=True, exist_ok=True)
+    retry_kwargs["offload_folder"] = str(offload_folder)
+
+    retry_kwargs["quantization_config"] = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type=spec.bnb_4bit_quant_type,
+        bnb_4bit_compute_dtype=_resolve_dtype(torch, spec.bnb_4bit_compute_dtype),
+        bnb_4bit_use_double_quant=bool(spec.use_double_quant),
+        llm_int8_enable_fp32_cpu_offload=True,
+    )
+
+    return retry_kwargs, str(offload_folder), max_memory
+
+
+def _normalize_model_load_type(value: str | None):
+    normalized = (value or "GPU_load").strip().lower()
+    if normalized == "auto":
+        return "auto"
+    if normalized in {"gpu_load", "prefer_gpu"}:
+        return "GPU_load"
+    if normalized in {"gpu_cpu_load", "always_cpu_offload"}:
+        return "GPU_CPU_load"
+    return "GPU_load"
+
+
+def _detect_total_vram_bytes(torch):
+    try:
+        if torch.cuda.is_available():
+            return int(torch.cuda.get_device_properties(0).total_memory)
+    except Exception:
+        pass
+    return None
+
+
+def _select_effective_model_load_type(spec, torch):
+    requested = _normalize_model_load_type(getattr(spec, "model_load_type", "GPU_load"))
+    total_vram_bytes = _detect_total_vram_bytes(torch)
+    total_vram_gib = None
+    if total_vram_bytes:
+        total_vram_gib = total_vram_bytes / (1024 ** 3)
+
+    if requested != "auto":
+        return requested, requested, total_vram_gib, "user_selected"
+
+    if not torch.cuda.is_available():
+        return requested, "GPU_CPU_load", total_vram_gib, "cuda_unavailable"
+
+    model_ref = str(getattr(spec, "base_model_name_or_path", "") or "")
+    if "Qwen/Qwen3.5-9B" in model_ref and total_vram_gib is not None and total_vram_gib <= 10.5:
+        return requested, "GPU_CPU_load", total_vram_gib, "auto_low_vram_qwen3.5_9b"
+
+    return requested, "GPU_load", total_vram_gib, "auto_default_gpu_load"
+
+
 def load_model_bundle(spec, logger=None):
     load_started_at = time.perf_counter()
     apply_runtime_compat_shims(logger=logger)
@@ -753,6 +904,16 @@ def load_model_bundle(spec, logger=None):
 
     if "Qwen/Qwen3.5-" in str(spec.base_model_name_or_path) and not transformers_supports_qwen35():
         installed = get_dependency_versions().get("transformers") or "<missing>"
+        installed_torch = get_dependency_versions().get("torch") or "<missing>"
+        if not torch_supports_modern_transformers():
+            raise ModelLoadError(
+                "Qwen3.5 models are not supported on this legacy Forge runtime. "
+                f"Installed torch={installed_torch}, but the modern Qwen3.5 dependency profile needs torch>={TORCH_MIN_FOR_QWEN35}. "
+                f"Installed transformers={installed}, required>={QWEN35_MIN_TRANSFORMERS}. "
+                "This extension intentionally keeps older dependencies on such environments so Forge itself does not break. "
+                "Use qwen2.5-7b-instruct on this PC, or upgrade Forge/PyTorch first if you need Qwen3.5. "
+                f"Current dependency set: {format_dependency_versions()}"
+            )
         raise ModelLoadError(
             "Qwen3.5 models require a newer Transformers build. "
             f"Installed transformers={installed}, required>={QWEN35_MIN_TRANSFORMERS}. "
@@ -806,12 +967,25 @@ def load_model_bundle(spec, logger=None):
         logger=logger,
     )
 
+    requested_model_load_type, effective_model_load_type, total_vram_gib, model_load_type_reason = (
+        _select_effective_model_load_type(spec, torch)
+    )
+    _safe_log(
+        logger,
+        "model_load_type "
+        f"requested={requested_model_load_type} "
+        f"effective={effective_model_load_type} "
+        f"reason={model_load_type_reason} "
+        f"total_vram_gib={f'{total_vram_gib:.2f}' if total_vram_gib is not None else 'unknown'}",
+    )
+
     model_kwargs = {
         "device_map": spec.device_map,
         "trust_remote_code": spec.trust_remote_code,
         "local_files_only": True if base_reference.resolved_local_path else spec.local_files_only,
         "low_cpu_mem_usage": True,
         "cache_dir": spec.cache_dir,
+        "dtype": _resolve_dtype(torch, spec.torch_dtype),
     }
 
     if spec.load_in_4bit:
@@ -820,11 +994,24 @@ def load_model_bundle(spec, logger=None):
             bnb_4bit_quant_type=spec.bnb_4bit_quant_type,
             bnb_4bit_compute_dtype=_resolve_dtype(torch, spec.bnb_4bit_compute_dtype),
             bnb_4bit_use_double_quant=bool(spec.use_double_quant),
+            llm_int8_enable_fp32_cpu_offload=(effective_model_load_type == "GPU_CPU_load"),
         )
         model_kwargs["quantization_config"] = quantization_config
-        model_kwargs["dtype"] = _resolve_dtype(torch, spec.torch_dtype)
-    else:
-        model_kwargs["dtype"] = _resolve_dtype(torch, spec.torch_dtype)
+
+    cpu_offload_retry_used = False
+    cpu_offload_folder = None
+    cpu_offload_max_memory = None
+    if effective_model_load_type == "GPU_CPU_load":
+        model_kwargs["device_map"] = "auto"
+        model_kwargs["offload_state_dict"] = True
+        model_kwargs["offload_buffers"] = True
+        cpu_offload_max_memory = _build_low_vram_max_memory(torch)
+        if cpu_offload_max_memory:
+            model_kwargs["max_memory"] = cpu_offload_max_memory
+        offload_folder = Path(_build_staging_dir(spec.cache_dir, "offload", spec.base_model_name_or_path))
+        offload_folder.mkdir(parents=True, exist_ok=True)
+        cpu_offload_folder = str(offload_folder)
+        model_kwargs["offload_folder"] = cpu_offload_folder
 
     base_download_started = False
     base_download_finished = False
@@ -850,7 +1037,35 @@ def load_model_bundle(spec, logger=None):
             logger=logger,
         )
     except Exception as exc:
-        if _should_retry_without_4bit(spec, exc):
+        if effective_model_load_type != "GPU_CPU_load" and _should_retry_with_cpu_offload(spec, exc):
+            cpu_offload_retry_used = True
+            retry_model_kwargs, cpu_offload_folder, cpu_offload_max_memory = _build_cpu_offload_retry_kwargs(
+                spec,
+                model_kwargs,
+                BitsAndBytesConfig,
+                torch,
+            )
+            _safe_log(
+                logger,
+                "low_vram_retry "
+                "reason=quantized_model_spilled_to_cpu_or_disk "
+                "retry_with_cpu_offload=True "
+                f"offload_folder={cpu_offload_folder} "
+                f"max_memory={cpu_offload_max_memory}",
+            )
+            try:
+                base_model_obj = _load_base_model_with_compat(
+                    AutoModelForCausalLM,
+                    base_reference.resolved_reference,
+                    retry_model_kwargs,
+                    logger=logger,
+                )
+            except Exception as retry_exc:
+                exc = retry_exc
+            else:
+                exc = None
+
+        if exc is not None and _should_retry_without_4bit(spec, exc):
             quantization_fallback_used = True
             _safe_log(
                 logger,
@@ -878,8 +1093,14 @@ def load_model_bundle(spec, logger=None):
                 logger,
                 f"base_download_failed reference={base_reference.original_reference} error={exc}",
             )
+            formatted_error = _format_hf_error(exc, "base_model", spec.base_model_name_or_path)
+            if _is_low_vram_dispatch_error(exc):
+                formatted_error += (
+                    " The selected LLM likely exceeds the available VRAM for a clean GPU-only load on this machine. "
+                    "On GPUs around 8 GB VRAM, qwen3.5-4b or qwen2.5-7b-instruct is recommended if CPU offload still fails."
+                )
             raise ModelLoadError(
-                _format_hf_error(exc, "base_model", spec.base_model_name_or_path)
+                formatted_error
             ) from exc
         else:
             raise ModelLoadError(f"Failed to load base model '{spec.base_model_name_or_path}': {exc}") from exc
@@ -979,6 +1200,15 @@ def load_model_bundle(spec, logger=None):
         "merge_lora_seconds": merge_lora_seconds,
         "merge_lora_skipped_reason": merge_lora_skipped_reason,
         "quantization_fallback_used": quantization_fallback_used,
+        "model_load_type_requested": requested_model_load_type,
+        "model_load_type_effective": effective_model_load_type,
+        "model_load_type_reason": model_load_type_reason,
+        "model_load_total_vram_gib": (
+            f"{total_vram_gib:.2f}" if total_vram_gib is not None else None
+        ),
+        "cpu_offload_retry_used": cpu_offload_retry_used,
+        "cpu_offload_folder": cpu_offload_folder,
+        "cpu_offload_max_memory": cpu_offload_max_memory,
         "adapter_config_loaded": adapter_config_loaded,
         "adapter_weights_loaded": adapter_weights_loaded,
         "adapter_files": adapter_report,
