@@ -32,7 +32,6 @@ class ModelSpec:
     bnb_4bit_quant_type: str = "nf4"
     bnb_4bit_compute_dtype: str = "bfloat16"
     use_double_quant: bool = True
-    model_load_type: str = "GPU_load"
     device_map: str = "auto"
     torch_dtype: str = "bfloat16"
     trust_remote_code: bool = False
@@ -157,7 +156,6 @@ def get_model_spec(model_key: str):
         bnb_4bit_quant_type=entry.get("bnb_4bit_quant_type", "nf4"),
         bnb_4bit_compute_dtype=entry.get("bnb_4bit_compute_dtype", "bfloat16"),
         use_double_quant=entry.get("use_double_quant", True),
-        model_load_type=entry.get("model_load_type", "GPU_load"),
         device_map=entry.get("device_map", "auto"),
         torch_dtype=entry.get("torch_dtype", "bfloat16"),
         trust_remote_code=entry.get("trust_remote_code", False),
