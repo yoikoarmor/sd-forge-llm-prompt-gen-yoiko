@@ -8,6 +8,7 @@ from packaging.version import Version, InvalidVersion
 EXTENSION_ID = "sd-forge-llm-prompt-gen-yoiko"
 LOG_PREFIX = f"[{EXTENSION_ID}]"
 QWEN35_MIN_TRANSFORMERS = Version("5.5.0")
+TORCH_MIN_FOR_QWEN35 = Version("2.4.0")
 
 
 def _safe_log(logger, message: str):
@@ -18,6 +19,7 @@ def _safe_log(logger, message: str):
 @lru_cache(maxsize=1)
 def get_dependency_versions():
     names = [
+        "torch",
         "transformers",
         "huggingface_hub",
         "peft",
@@ -48,6 +50,13 @@ def transformers_supports_qwen35():
     if installed is None:
         return False
     return installed >= QWEN35_MIN_TRANSFORMERS
+
+
+def torch_supports_modern_transformers():
+    installed = _parse_version(get_dependency_versions().get("torch"))
+    if installed is None:
+        return False
+    return installed >= TORCH_MIN_FOR_QWEN35
 
 
 def format_dependency_versions():

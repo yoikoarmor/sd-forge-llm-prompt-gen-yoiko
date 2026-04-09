@@ -485,6 +485,12 @@ def generate_prompt_candidates(
         )
 
     started_at = time.perf_counter()
+    _safe_log(
+        logger,
+        "llm_generate_started "
+        f"input_tokens={prepared_input.tokenized_input_length} "
+        f"max_new_tokens={generation_kwargs.get('max_new_tokens')}",
+    )
     try:
         output_ids = _generate_once(model, prepared_input.encoded, generation_kwargs, torch)
         generated_tokens = output_ids[0][prepared_input.encoded["input_ids"].shape[1]:]
@@ -495,6 +501,7 @@ def generate_prompt_candidates(
     finally:
         _clear_generation_state(torch)
     generate_seconds = time.perf_counter() - started_at
+    _safe_log(logger, f"llm_generated_token_count={int(generated_tokens.shape[0])}")
     _safe_log(logger, f"llm_generate_seconds={generate_seconds:.3f}")
 
     debug_entry = _make_candidate_debug(

@@ -1,0 +1,11 @@
+# Legacy dependency profile for older Forge environments.
+# This profile avoids upgrading to Transformers 5.x on setups where
+# the host Forge stack still uses torch < 2.4.
+# Qwen2.5 should remain usable here, but Qwen3.5 is not supported.
+transformers==4.46.1
+huggingface_hub==0.26.2
+peft==0.13.2
+accelerate==0.31.0
+bitsandbytes==0.45.3
+tokenizers==0.20.3
+safetensors>=0.4.3

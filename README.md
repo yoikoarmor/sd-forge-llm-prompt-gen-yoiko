@@ -115,6 +115,8 @@ The extension exposes these controls:
 - `Enable LLM Prompt Gen`
 - `LLM Model`
 - `LLM Load Mode`
+- `Model Load Type`
+- `LLM Max New Tokens`
 - `Gen Prompt`
 - `Prompt (Optional)` (Forge built-in prompt field)
 - `Negative prompt` (Forge built-in negative field)
@@ -147,6 +149,25 @@ Used as the final negative prompt as usual.
   - Keep the loaded LLM in memory for reuse
 - `load_then_unload_before_image_gen`
   - Load for prompt generation, then unload before image generation continues
+
+#### Model Load Type
+
+- `GPU_load`
+  - Default
+  - Tries to keep the model on GPU first
+  - If a quantized load spills beyond VRAM, the loader falls back to GPU+RAM offload
+- `GPU_CPU_load`
+  - Starts in GPU+RAM offload mode immediately
+  - Useful on lower-VRAM systems that would otherwise fail before generation
+- `auto`
+  - Chooses between the two based on a simple VRAM/model-size heuristic
+  - For example, `qwen3.5-9b` on an 8 GB-class GPU will lean toward CPU offload
+
+#### LLM Max New Tokens
+
+- Slider control for per-request `max_new_tokens`
+- Default is `128`
+- Higher values can produce longer prompts but also increase latency and memory use
 
 ## Installation
 
@@ -227,6 +248,13 @@ Additional public adapters:
 
 On the first run, the extension can download both the base model and the adapter from Hugging Face. Large first-time downloads are expected.
 
+Practical VRAM note:
+
+- `qwen3.5-9b` is a large option and may not fit cleanly on GPUs around 8 GB VRAM.
+- `GPU_load` retries with GPU+RAM offload when a 4bit load spills to CPU/disk.
+- `GPU_CPU_load` starts in GPU+RAM offload mode immediately.
+- If that still fails, use `qwen3.5-4b` or `qwen2.5-7b-instruct` on that machine.
+
 ## Dependency notes
 
 The extension uses `install.py` and `requirements.txt` to request missing packages inside the Forge environment.
@@ -248,8 +276,10 @@ Notes:
 - Forge's current Gradio stack still imports the removed `HfFolder` symbol, so `install.py` writes compatibility patches during setup.
 - The extension also applies a runtime compatibility patch for the CLIP causal mask path used by Forge text encoders.
 - If Forge pins an older `bitsandbytes` build at startup, the extension can retry in non-4bit mode instead of aborting the LLM call immediately.
+- On low-VRAM systems, the loader can also retry once with CPU offload if a 4bit model spills beyond available GPU memory.
 - For Qwen 3.5-family templates, the default is `enable_thinking = false`.
 - On some high-VRAM Windows setups, `Qwen/Qwen3.5-4B` and `Qwen/Qwen3.5-9B` can be faster with `load_in_4bit = false` and `merge_lora_for_inference = true`.
+- On older Forge runtimes that still use `torch < 2.4`, `install.py` now selects a legacy dependency profile automatically to avoid breaking Forge startup. In that mode, `qwen2.5-7b-instruct` is the intended option and `Qwen/Qwen3.5-*` is not supported until the host Forge/PyTorch stack is upgraded.
 
 ## LoRA distribution policy
 
@@ -391,9 +421,15 @@ If that shim is missing, rerun the extension install step or run `bootstrap_forg
 If the logs show `quantization_fallback_used=True`, Forge has probably kept an older `bitsandbytes` build than the one requested by this extension.
 In that case the model can still load in non-4bit mode if enough VRAM is available.
 
+If the logs show `cpu_offload_retry_used=True`, the loader detected that the quantized model did not fit cleanly in VRAM and retried with CPU offload.
+That is expected on lower-VRAM GPUs, but for smoother prompt generation you may still want to switch to `qwen3.5-4b` or `qwen2.5-7b-instruct`.
+
 If `Qwen/Qwen3.5-4B` feels unexpectedly slow, check:
 
 - `quantization_fallback_used`
+- `cpu_offload_retry_used`
+- `cpu_offload_folder`
+- `cpu_offload_max_memory`
 - `llm_generate_seconds`
 - `merge_lora_for_inference_applied`
 - `merge_lora_skipped_reason`
@@ -437,6 +473,10 @@ Useful runtime logs include:
 - `model_load_seconds`
 - `base_model_class`
 - `final_model_class`
+- `model_load_type_requested`
+- `model_load_type_effective`
+- `model_load_type_reason`
+- `model_load_total_vram_gib`
 - `is_peft_model`
 - `active_adapter`
 - `tokenizer_source`
