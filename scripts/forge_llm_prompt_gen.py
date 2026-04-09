@@ -70,11 +70,6 @@ LLM_LOAD_MODE_CHOICES = [
     "keep_loaded",
     "load_then_unload_before_image_gen",
 ]
-MODEL_LOAD_TYPE_CHOICES = [
-    "auto",
-    "GPU_CPU_load",
-    "GPU_load",
-]
 
 
 print(f"{LOG_PREFIX} extension script loaded")
@@ -86,7 +81,6 @@ class MergeDecision:
     llm_enabled: bool
     llm_model_name: str
     llm_load_mode: str
-    model_load_type: str
     llm_max_new_tokens: int
     llm_gen_prompt: str
     original_prompt: object
@@ -111,8 +105,6 @@ class MergeDecision:
     dedupe_applied: bool = False
     final_positive_before_dedupe: str = ""
     final_positive_after_dedupe: str = ""
-    block_generation: bool = False
-    block_reason: str = ""
 
     @property
     def gen_prompt_empty(self):
@@ -156,35 +148,16 @@ def normalize_load_mode(value):
     return LLM_LOAD_MODE_CHOICES[0]
 
 
-def normalize_model_load_type(value):
-    if value in MODEL_LOAD_TYPE_CHOICES:
-        return value
-    if value == "prefer_gpu":
-        return "GPU_load"
-    if value == "always_cpu_offload":
-        return "GPU_CPU_load"
-    return "GPU_load"
-
-
 def normalize_max_new_tokens(value):
     try:
-        return max(1, min(512, int(value)))
+        return max(1, min(225, int(value)))
     except Exception:
         return 128
 
 
-def build_initial_decision(
-    llm_enabled,
-    llm_model_name,
-    llm_load_mode,
-    model_load_type,
-    llm_max_new_tokens,
-    llm_gen_prompt,
-    original_prompt,
-):
+def build_initial_decision(llm_enabled, llm_model_name, llm_load_mode, llm_max_new_tokens, llm_gen_prompt, original_prompt):
     llm_model_name = coerce_text(llm_model_name).strip() or "none"
     llm_load_mode = normalize_load_mode(llm_load_mode)
-    model_load_type = normalize_model_load_type(model_load_type)
     llm_max_new_tokens = normalize_max_new_tokens(llm_max_new_tokens)
     llm_gen_prompt = coerce_text(llm_gen_prompt).strip()
     original_prompt = coerce_text(original_prompt)
@@ -194,7 +167,6 @@ def build_initial_decision(
             llm_enabled=False,
             llm_model_name=llm_model_name,
             llm_load_mode=llm_load_mode,
-            model_load_type=model_load_type,
             llm_max_new_tokens=llm_max_new_tokens,
             llm_gen_prompt=llm_gen_prompt,
             original_prompt=original_prompt,
@@ -208,7 +180,6 @@ def build_initial_decision(
             llm_enabled=True,
             llm_model_name=llm_model_name,
             llm_load_mode=llm_load_mode,
-            model_load_type=model_load_type,
             llm_max_new_tokens=llm_max_new_tokens,
             llm_gen_prompt=llm_gen_prompt,
             original_prompt=original_prompt,
@@ -222,7 +193,6 @@ def build_initial_decision(
             llm_enabled=True,
             llm_model_name=llm_model_name,
             llm_load_mode=llm_load_mode,
-            model_load_type=model_load_type,
             llm_max_new_tokens=llm_max_new_tokens,
             llm_gen_prompt=llm_gen_prompt,
             original_prompt=original_prompt,
@@ -235,7 +205,6 @@ def build_initial_decision(
         llm_enabled=True,
         llm_model_name=llm_model_name,
         llm_load_mode=llm_load_mode,
-        model_load_type=model_load_type,
         llm_max_new_tokens=llm_max_new_tokens,
         llm_gen_prompt=llm_gen_prompt,
         original_prompt=original_prompt,
@@ -284,17 +253,10 @@ class ForgeLlmPromptGenScript(scripts.Script):
                     elem_id=f"{tab_name}_llm_load_mode",
                     elem_classes=["llm-prompt-gen-load-mode"],
                 )
-                model_load_type = gr.Dropdown(
-                    label="Model Load Type",
-                    choices=MODEL_LOAD_TYPE_CHOICES,
-                    value="GPU_load",
-                    elem_id=f"{tab_name}_llm_model_load_type",
-                    elem_classes=["llm-prompt-gen-model-load-type"],
-                )
             llm_max_new_tokens = gr.Slider(
                 label="LLM Max New Tokens",
-                minimum=16,
-                maximum=512,
+                minimum=1,
+                maximum=225,
                 step=1,
                 value=128,
                 elem_id=f"{tab_name}_llm_max_new_tokens",
@@ -313,7 +275,6 @@ class ForgeLlmPromptGenScript(scripts.Script):
             llm_enabled,
             llm_model_name,
             llm_load_mode,
-            model_load_type,
             llm_max_new_tokens,
             llm_gen_prompt,
         ]
@@ -327,18 +288,6 @@ class ForgeLlmPromptGenScript(scripts.Script):
             return False
         return bool(getattr(state, "interrupted", False) or getattr(state, "stopping_generation", False))
 
-    def _mark_llm_required_failure(self, decision, *, reason):
-        decision.block_generation = True
-        decision.block_reason = reason
-        decision.fallback_used = False
-        decision.fallback_reason = reason
-        decision.selected_positive = ""
-        decision.final_positive_before_dedupe = ""
-        decision.final_positive_after_dedupe = ""
-        decision.final_prompt = decision.original_prompt
-        decision.changed = False
-        return decision
-
     def _generate_with_llm(self, decision, negative_prompt):
         runtime = get_runtime()
 
@@ -351,9 +300,8 @@ class ForgeLlmPromptGenScript(scripts.Script):
 
         try:
             spec = get_model_spec(decision.llm_model_name)
-            spec.model_load_type = decision.model_load_type
             generation_defaults = dict(get_generation_defaults())
-            generation_defaults["max_new_tokens"] = int(decision.llm_max_new_tokens)
+            generation_defaults["max_new_tokens"] = decision.llm_max_new_tokens
             self._log(
                 "llm_load_config "
                 f"base_model_name_or_path={spec.base_model_name_or_path} "
@@ -362,12 +310,11 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 f"tokenizer_source={spec.tokenizer_source} "
                 f"chat_template_source={spec.chat_template_source} "
                 f"quantization={'int4' if spec.load_in_4bit else 'none'} "
-                f"model_load_type={spec.model_load_type} "
-                f"max_new_tokens={decision.llm_max_new_tokens} "
                 f"bnb_4bit_quant_type={spec.bnb_4bit_quant_type} "
                 f"bnb_4bit_compute_dtype={spec.bnb_4bit_compute_dtype} "
                 f"bnb_4bit_use_double_quant={bool(spec.use_double_quant)} "
                 f"input_template_mode={generation_defaults.get('input_template_mode', 'simple_chat_template')} "
+                f"max_new_tokens={generation_defaults.get('max_new_tokens', 128)} "
                 f"cache_implementation={generation_defaults.get('cache_implementation', 'dynamic')} "
                 f"use_cache={bool(generation_defaults.get('use_cache', True))}"
             )
@@ -400,13 +347,6 @@ class ForgeLlmPromptGenScript(scripts.Script):
             decision.original_prompt_injected_to_llm = bool(
                 result.input_debug.get("original_prompt_injected_to_llm", False)
             )
-            if result.interrupted or not result.llm_called:
-                self._mark_llm_required_failure(
-                    decision,
-                    reason="llm_not_completed",
-                )
-                decision.runtime_action = "llm_not_completed"
-                return decision
             final_positive_details = build_final_positive_details(
                 result.selected_positive,
                 decision.original_prompt,
@@ -428,29 +368,23 @@ class ForgeLlmPromptGenScript(scripts.Script):
             return decision
         except (RegistryError, MissingDependencyError, ModelLoadError) as exc:
             decision.error = str(exc)
-            self._mark_llm_required_failure(
-                decision,
-                reason="llm_setup_failed",
-            )
-            self._log(f"llm setup failed: {exc}; blocking image generation because no LLM output is available")
+            decision.final_prompt = decision.original_prompt
+            decision.changed = False
+            self._log(f"llm setup failed: {exc}; falling back to original prompt")
         except GenerationError as exc:
             decision.error = str(exc)
-            self._mark_llm_required_failure(
-                decision,
-                reason="llm_generation_failed",
-            )
+            decision.final_prompt = decision.original_prompt
+            decision.changed = False
             if exc.is_oom:
-                self._log(f"llm generation OOM: {exc}; blocking image generation because no LLM output is available")
+                self._log(f"llm generation OOM: {exc}; falling back to original prompt")
                 runtime.unload(logger=self._log)
             else:
-                self._log(f"llm generation failed: {exc}; blocking image generation because no LLM output is available")
+                self._log(f"llm generation failed: {exc}; falling back to original prompt")
         except Exception as exc:
             decision.error = str(exc)
-            self._mark_llm_required_failure(
-                decision,
-                reason="llm_unexpected_error",
-            )
-            self._log(f"unexpected llm error: {exc}; blocking image generation because no LLM output is available")
+            decision.final_prompt = decision.original_prompt
+            decision.changed = False
+            self._log(f"unexpected llm error: {exc}; falling back to original prompt")
             traceback.print_exc()
         finally:
             if decision.llm_load_mode == "load_then_unload_before_image_gen":
@@ -458,16 +392,7 @@ class ForgeLlmPromptGenScript(scripts.Script):
 
         return decision
 
-    def before_process(
-        self,
-        p,
-        llm_enabled,
-        llm_model_name,
-        llm_load_mode,
-        model_load_type,
-        llm_max_new_tokens,
-        llm_gen_prompt,
-    ):
+    def before_process(self, p, llm_enabled, llm_model_name, llm_load_mode, llm_max_new_tokens, llm_gen_prompt):
         try:
             original_prompt = getattr(p, "prompt", "")
             negative_prompt = getattr(p, "negative_prompt", "")
@@ -476,7 +401,6 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 llm_enabled,
                 llm_model_name,
                 llm_load_mode,
-                model_load_type,
                 llm_max_new_tokens,
                 llm_gen_prompt,
                 original_prompt,
@@ -492,41 +416,13 @@ class ForgeLlmPromptGenScript(scripts.Script):
             setattr(p, "_llm_prompt_gen_decision", decision)
             setattr(p, "_llm_prompt_gen_candidates", list(decision.candidates))
 
-            if decision.block_generation:
-                if not hasattr(p, "extra_generation_params") or p.extra_generation_params is None:
-                    p.extra_generation_params = {}
-                p.extra_generation_params["LLM Prompt Gen"] = "llm blocked"
-                p.extra_generation_params["LLM Model"] = decision.llm_model_name
-                p.extra_generation_params["LLM Load Mode"] = decision.llm_load_mode
-                p.extra_generation_params["LLM Model Load Type"] = decision.model_load_type
-                p.extra_generation_params["LLM Max New Tokens"] = decision.llm_max_new_tokens
-                p.extra_generation_params["LLM Blocked"] = True
-                p.extra_generation_params["LLM Block Reason"] = decision.block_reason or "llm_output_required"
-                p.extra_generation_params["LLM Called"] = decision.llm_called
-                shared.state.textinfo = "LLM output was required but not produced. Image generation was stopped."
-                shared.state.interrupt()
-                p.n_iter = 0
-                self._log(
-                    "llm output was required but not produced; interrupting image generation to avoid using raw input"
-                )
-                return
-
             if decision.changed:
                 p.prompt = decision.final_prompt
         except Exception as exc:
             self._log(f"prompt merge failed in before_process: {exc}")
             traceback.print_exc()
 
-    def process(
-        self,
-        p,
-        llm_enabled,
-        llm_model_name,
-        llm_load_mode,
-        model_load_type,
-        llm_max_new_tokens,
-        llm_gen_prompt,
-    ):
+    def process(self, p, llm_enabled, llm_model_name, llm_load_mode, llm_max_new_tokens, llm_gen_prompt):
         try:
             decision = getattr(p, "_llm_prompt_gen_decision", None)
             if decision is None:
@@ -534,7 +430,6 @@ class ForgeLlmPromptGenScript(scripts.Script):
                     llm_enabled,
                     llm_model_name,
                     llm_load_mode,
-                    model_load_type,
                     llm_max_new_tokens,
                     llm_gen_prompt,
                     getattr(p, "prompt", ""),
@@ -549,8 +444,6 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 p.extra_generation_params["LLM Prompt Gen"] = "manual prepend"
             elif decision.gen_prompt_empty:
                 p.extra_generation_params["LLM Prompt Gen"] = "model selected (gen prompt empty)"
-            elif decision.block_generation:
-                p.extra_generation_params["LLM Prompt Gen"] = "llm blocked"
             elif decision.llm_called:
                 p.extra_generation_params["LLM Prompt Gen"] = "llm generated"
             else:
@@ -558,11 +451,7 @@ class ForgeLlmPromptGenScript(scripts.Script):
 
             p.extra_generation_params["LLM Model"] = decision.llm_model_name
             p.extra_generation_params["LLM Load Mode"] = decision.llm_load_mode
-            p.extra_generation_params["LLM Model Load Type"] = decision.model_load_type
             p.extra_generation_params["LLM Max New Tokens"] = decision.llm_max_new_tokens
-            p.extra_generation_params["LLM Blocked"] = decision.block_generation
-            if decision.block_reason:
-                p.extra_generation_params["LLM Block Reason"] = decision.block_reason
             p.extra_generation_params["LLM Called"] = decision.llm_called
             p.extra_generation_params["LLM Fallback Used"] = decision.fallback_used
             p.extra_generation_params["LLM Seed Mode"] = decision.seed_mode
@@ -580,10 +469,8 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 f"enabled={decision.llm_enabled} "
                 f"model={decision.llm_model_name} "
                 f"load_mode={decision.llm_load_mode} "
-                f"model_load_type={decision.model_load_type} "
                 f"max_new_tokens={decision.llm_max_new_tokens} "
                 f"gen_prompt_empty={decision.gen_prompt_empty} "
-                f"block_generation={decision.block_generation} "
                 f"seed_mode={decision.seed_mode} "
                 f"llm_seed={decision.llm_seed} "
                 f"llm_called={decision.llm_called} "
