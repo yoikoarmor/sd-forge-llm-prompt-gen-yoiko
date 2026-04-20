@@ -18,6 +18,11 @@ final_positive = processed_gen_prompt + ", " + original_prompt
 final_negative = negative_prompt
 ```
 
+### 簡易説明
+
+導入や使い方のざっくりした流れは、こちらの note にもまとめています。  
+[sd-forge-llm-prompt-gen-yoiko 簡易説明](https://note.com/yoikoarmor/n/nfa682c31e319)
+
 ### 対応モデル
 
 - `qwen2.5-7b-instruct`
