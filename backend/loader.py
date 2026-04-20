@@ -1,7 +1,7 @@
 import inspect
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .compat import (
@@ -66,6 +66,11 @@ TOKENIZER_ALLOW_PATTERNS = [
     "*.model",
     "chat_template.jinja",
 ]
+QWEN35_9B_HIGH_VRAM_THRESHOLD_BYTES = 24 * 1024**3
+QWEN35_9B_HIGH_VRAM_PROFILE_NAME = "qwen35_9b_high_vram_bf16_merge"
+RUNTIME_WEIGHT_MODE_AUTO = "auto"
+RUNTIME_WEIGHT_MODE_4BIT = "4bit"
+RUNTIME_WEIGHT_MODE_BF16_MERGE = "bf16_merge"
 
 
 def _import_torch():
@@ -649,6 +654,20 @@ def _log_load_debug(load_debug, logger):
     if not logger:
         return
 
+    logger(f"requested_weight_mode={load_debug.get('requested_weight_mode')}")
+    logger(f"effective_weight_mode={load_debug.get('effective_weight_mode')}")
+    logger(f"throughput_profile_name={load_debug.get('throughput_profile_name')}")
+    logger(f"throughput_profile_applied={load_debug.get('throughput_profile_applied')}")
+    logger(f"throughput_profile_reason={load_debug.get('throughput_profile_reason')}")
+    logger(
+        f"throughput_profile_fallback_to_original={load_debug.get('throughput_profile_fallback_to_original')}"
+    )
+    logger(f"detected_total_vram_mb={load_debug.get('detected_total_vram_mb')}")
+    logger(f"effective_load_in_4bit={load_debug.get('effective_load_in_4bit')}")
+    logger(
+        f"effective_merge_lora_for_inference={load_debug.get('effective_merge_lora_for_inference')}"
+    )
+    logger(f"effective_torch_dtype={load_debug.get('effective_torch_dtype')}")
     logger(f"base_model_source={load_debug['base_model_source']}")
     logger(f"adapter_source={load_debug['adapter_source']}")
     logger(f"base_model_name_or_path={load_debug['base_model_name_or_path']}")
@@ -744,7 +763,172 @@ def _should_retry_without_4bit(spec, exc: Exception):
     return "bitsandbytes" in error_text and "4-bit" in error_text
 
 
+def _get_total_vram_bytes(torch):
+    try:
+        if not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.get_device_properties(0).total_memory)
+    except Exception:
+        return None
+
+
+def _is_qwen35_9b_spec(spec):
+    if str(getattr(spec, "key", "")).strip().lower() == "qwen3.5-9b":
+        return True
+    return "Qwen/Qwen3.5-9B" in str(getattr(spec, "base_model_name_or_path", ""))
+
+
+def _normalize_runtime_weight_mode(value):
+    normalized = str(value or RUNTIME_WEIGHT_MODE_AUTO).strip().lower()
+    if normalized in {
+        RUNTIME_WEIGHT_MODE_AUTO,
+        RUNTIME_WEIGHT_MODE_4BIT,
+        RUNTIME_WEIGHT_MODE_BF16_MERGE,
+    }:
+        return normalized
+    return RUNTIME_WEIGHT_MODE_AUTO
+
+
+def _choose_effective_spec_for_throughput(spec, torch):
+    requested_weight_mode = _normalize_runtime_weight_mode(
+        getattr(spec, "runtime_weight_mode", RUNTIME_WEIGHT_MODE_AUTO)
+    )
+    total_vram_bytes = _get_total_vram_bytes(torch)
+    profile_debug = {
+        "requested_weight_mode": requested_weight_mode,
+        "effective_weight_mode": requested_weight_mode,
+        "throughput_profile_name": None,
+        "throughput_profile_applied": False,
+        "throughput_profile_reason": "not_applicable",
+        "throughput_profile_fallback_to_original": False,
+        "detected_total_vram_mb": round(total_vram_bytes / (1024**2), 2) if total_vram_bytes else None,
+        "effective_load_in_4bit": spec.load_in_4bit,
+        "effective_merge_lora_for_inference": bool(spec.merge_lora_for_inference),
+        "effective_torch_dtype": spec.torch_dtype,
+    }
+
+    if requested_weight_mode == RUNTIME_WEIGHT_MODE_4BIT:
+        effective_spec = replace(
+            spec,
+            load_in_4bit=True,
+            merge_lora_for_inference=False,
+        )
+        profile_debug.update(
+            {
+                "throughput_profile_reason": "forced_4bit",
+                "effective_load_in_4bit": effective_spec.load_in_4bit,
+                "effective_merge_lora_for_inference": bool(effective_spec.merge_lora_for_inference),
+                "effective_torch_dtype": effective_spec.torch_dtype,
+            }
+        )
+        return effective_spec, profile_debug
+
+    if requested_weight_mode == RUNTIME_WEIGHT_MODE_BF16_MERGE:
+        effective_spec = replace(
+            spec,
+            load_in_4bit=False,
+            merge_lora_for_inference=True,
+            torch_dtype=spec.torch_dtype or "bfloat16",
+        )
+        profile_debug.update(
+            {
+                "throughput_profile_reason": "forced_bf16_merge",
+                "effective_load_in_4bit": effective_spec.load_in_4bit,
+                "effective_merge_lora_for_inference": bool(effective_spec.merge_lora_for_inference),
+                "effective_torch_dtype": effective_spec.torch_dtype,
+                "effective_weight_mode": RUNTIME_WEIGHT_MODE_BF16_MERGE,
+            }
+        )
+        return effective_spec, profile_debug
+
+    if not _is_qwen35_9b_spec(spec):
+        profile_debug["throughput_profile_reason"] = "not_qwen35_9b"
+        return spec, profile_debug
+
+    if not torch.cuda.is_available():
+        profile_debug["throughput_profile_reason"] = "cuda_unavailable"
+        return spec, profile_debug
+
+    if total_vram_bytes is None:
+        profile_debug["throughput_profile_reason"] = "vram_unknown"
+        return spec, profile_debug
+
+    if total_vram_bytes < QWEN35_9B_HIGH_VRAM_THRESHOLD_BYTES:
+        profile_debug["throughput_profile_reason"] = "insufficient_vram_for_bf16_merge"
+        return spec, profile_debug
+
+    if not spec.load_in_4bit:
+        profile_debug["throughput_profile_reason"] = "already_non_4bit"
+        return spec, profile_debug
+
+    if spec.merge_lora_for_inference:
+        profile_debug["throughput_profile_reason"] = "merge_already_requested"
+        return spec, profile_debug
+
+    effective_spec = replace(
+        spec,
+        load_in_4bit=False,
+        merge_lora_for_inference=True,
+        torch_dtype=spec.torch_dtype or "bfloat16",
+    )
+    profile_debug.update(
+            {
+                "throughput_profile_name": QWEN35_9B_HIGH_VRAM_PROFILE_NAME,
+                "throughput_profile_applied": True,
+                "throughput_profile_reason": "high_vram_auto_bf16_merge",
+                "effective_load_in_4bit": effective_spec.load_in_4bit,
+                "effective_merge_lora_for_inference": bool(effective_spec.merge_lora_for_inference),
+                "effective_torch_dtype": effective_spec.torch_dtype,
+                "effective_weight_mode": RUNTIME_WEIGHT_MODE_BF16_MERGE,
+            }
+        )
+    return effective_spec, profile_debug
+
+
+def _should_retry_after_throughput_profile(profile_debug, exc: Exception):
+    if not profile_debug.get("throughput_profile_applied"):
+        return False
+    error_text = str(exc).lower()
+    return any(
+        token in error_text
+        for token in (
+            "out of memory",
+            "not enough gpu ram",
+            "cpu or the disk",
+            "offload",
+            "device_map",
+        )
+    )
+
+
 def load_model_bundle(spec, logger=None):
+    apply_runtime_compat_shims(logger=logger)
+    torch = _import_torch()
+    effective_spec, profile_debug = _choose_effective_spec_for_throughput(spec, torch)
+
+    try:
+        return _load_model_bundle_once(spec, effective_spec, profile_debug, logger=logger)
+    except ModelLoadError as exc:
+        if not _should_retry_after_throughput_profile(profile_debug, exc):
+            raise
+
+        retry_debug = dict(profile_debug)
+        retry_debug["throughput_profile_applied"] = False
+        retry_debug["throughput_profile_fallback_to_original"] = True
+        retry_debug["throughput_profile_reason"] = "high_vram_profile_failed_retrying_original"
+        retry_debug["effective_load_in_4bit"] = spec.load_in_4bit
+        retry_debug["effective_merge_lora_for_inference"] = bool(spec.merge_lora_for_inference)
+        retry_debug["effective_torch_dtype"] = spec.torch_dtype
+        _safe_log(
+            logger,
+            "throughput_profile_retry "
+            f"name={profile_debug.get('throughput_profile_name')} "
+            f"reason={exc}",
+        )
+        return _load_model_bundle_once(spec, spec, retry_debug, logger=logger)
+
+
+def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
     load_started_at = time.perf_counter()
     apply_runtime_compat_shims(logger=logger)
     torch = _import_torch()
@@ -952,10 +1136,11 @@ def load_model_bundle(spec, logger=None):
     )
 
     load_debug = {
+        **profile_debug,
         "base_model_source": base_reference.source,
         "adapter_source": adapter_reference.source,
-        "base_model_name_or_path": spec.base_model_name_or_path,
-        "adapter_path": spec.adapter_path,
+        "base_model_name_or_path": original_spec.base_model_name_or_path,
+        "adapter_path": original_spec.adapter_path,
         "resolved_base_model_reference": base_reference.resolved_reference,
         "resolved_adapter_reference": adapter_reference.resolved_reference,
         "effective_base_model_reference": base_reference.effective_reference,

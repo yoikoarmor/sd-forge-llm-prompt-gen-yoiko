@@ -259,7 +259,9 @@ def _apply_llm_seed(torch, llm_seed):
         torch.cuda.manual_seed_all(int(llm_seed))
 
 
-def _clear_generation_state(torch):
+def _clear_generation_state(torch, aggressive: bool = True):
+    if not aggressive:
+        return
     gc.collect()
     if torch.cuda.is_available():
         try:
@@ -413,6 +415,8 @@ def generate_prompt_candidates(
     generation_defaults,
     interrupt_checker=None,
     logger=None,
+    aggressive_cleanup: bool = True,
+    num_candidates: int = 1,
 ):
     torch = _import_torch()
 
@@ -436,6 +440,9 @@ def generate_prompt_candidates(
         enable_thinking=enable_thinking,
     )
     generation_kwargs = _build_generation_kwargs(tokenizer, generation_defaults)
+    effective_num_candidates = max(1, int(num_candidates))
+    if effective_num_candidates > 1:
+        generation_kwargs["num_return_sequences"] = effective_num_candidates
     _apply_llm_seed(torch, llm_seed)
 
     _log_generation_context(
@@ -485,37 +492,61 @@ def generate_prompt_candidates(
         )
 
     started_at = time.perf_counter()
+    input_length = prepared_input.encoded["input_ids"].shape[1]
+    candidate_texts = []
+    candidate_debugs = []
+    chosen_index = -1
+    chosen_cleaned = ""
+    chosen_reject_reason = ""
     try:
         output_ids = _generate_once(model, prepared_input.encoded, generation_kwargs, torch)
-        generated_tokens = output_ids[0][prepared_input.encoded["input_ids"].shape[1]:]
-        raw_output = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        normalized_output = normalize_model_output(raw_output)
-        cleaned_output = clean_generated_positive(normalized_output)
-        usable, reject_reason = is_generated_prompt_strong_enough(cleaned_output)
-    finally:
-        _clear_generation_state(torch)
+        batch_size = output_ids.shape[0]
+        for idx in range(batch_size):
+            generated_tokens = output_ids[idx][input_length:]
+            raw_output = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            normalized_output = normalize_model_output(raw_output)
+            cleaned_output = clean_generated_positive(normalized_output)
+            usable, reject_reason = is_generated_prompt_strong_enough(cleaned_output)
+            accepted_for_this = usable and chosen_index < 0
+            candidate_texts.append(cleaned_output)
+            candidate_debugs.append(
+                _make_candidate_debug(
+                    index=idx,
+                    raw_output=raw_output,
+                    normalized_output=normalized_output,
+                    cleaned_output=cleaned_output,
+                    accepted=accepted_for_this,
+                    reject_reason=reject_reason,
+                )
+            )
+            if accepted_for_this:
+                chosen_index = idx
+                chosen_cleaned = cleaned_output
+                chosen_reject_reason = ""
+        if chosen_index < 0 and candidate_debugs:
+            chosen_index = 0
+            chosen_cleaned = candidate_texts[0]
+            chosen_reject_reason = candidate_debugs[0].get("reject_reason", "")
+    except Exception:
+        _clear_generation_state(torch, aggressive=True)
+        raise
+    else:
+        _clear_generation_state(torch, aggressive=aggressive_cleanup)
     generate_seconds = time.perf_counter() - started_at
-    _safe_log(logger, f"llm_generate_seconds={generate_seconds:.3f}")
+    _safe_log(logger, f"llm_generate_seconds={generate_seconds:.3f} num_candidates={effective_num_candidates}")
 
-    debug_entry = _make_candidate_debug(
-        index=0,
-        raw_output=raw_output,
-        normalized_output=normalized_output,
-        cleaned_output=cleaned_output,
-        accepted=usable,
-        reject_reason=reject_reason,
-    )
-
+    chosen_debug = candidate_debugs[chosen_index] if chosen_index >= 0 else {}
+    usable = chosen_debug.get("accepted", False) if chosen_debug else False
     fallback_used = not usable
-    fallback_reason = reject_reason if fallback_used else ""
-    selected_positive = cleaned_output if usable else build_manual_positive(gen_prompt, "")
+    fallback_reason = chosen_reject_reason if fallback_used else ""
+    selected_positive = chosen_cleaned if usable else build_manual_positive(gen_prompt, "")
 
     return GenerationResult(
         llm_called=True,
-        candidates=[cleaned_output] if cleaned_output else [],
-        candidate_debug=[debug_entry],
-        chosen_candidate=cleaned_output,
-        chosen_candidate_debug=debug_entry,
+        candidates=[t for t in candidate_texts if t],
+        candidate_debug=candidate_debugs,
+        chosen_candidate=chosen_cleaned,
+        chosen_candidate_debug=chosen_debug,
         selected_positive=selected_positive,
         fallback_used=fallback_used,
         fallback_reason=fallback_reason,

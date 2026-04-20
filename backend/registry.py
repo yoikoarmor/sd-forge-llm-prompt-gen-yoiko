@@ -1,5 +1,7 @@
+import copy
 import json
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -39,10 +41,20 @@ class ModelSpec:
     tokenizer_source: str = "adapter"
     chat_template_source: str = "adapter"
     use_fast_tokenizer: bool = True
+    runtime_weight_mode: str = "auto"
     description: str = ""
 
     def signature(self):
         return json.dumps(asdict(self), sort_keys=True, ensure_ascii=True)
+
+
+@lru_cache(maxsize=16)
+def _read_json_cached(path_str: str, mtime_ns: int):
+    path = Path(path_str)
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise RegistryError(f"Failed to parse JSON config: {path}: {exc}") from exc
 
 
 def _read_json_file(path: Path):
@@ -52,10 +64,9 @@ def _read_json_file(path: Path):
             f"Copy {MODEL_REGISTRY_EXAMPLE_PATH.name} to {MODEL_REGISTRY_PATH.name} and set local paths or Hugging Face repo IDs."
         )
 
-    try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError as exc:
-        raise RegistryError(f"Failed to parse JSON config: {path}: {exc}") from exc
+    mtime_ns = path.stat().st_mtime_ns
+    cached = _read_json_cached(str(path), mtime_ns)
+    return copy.deepcopy(cached)
 
 
 def _looks_like_remote_id(value: str):
@@ -163,6 +174,7 @@ def get_model_spec(model_key: str):
         tokenizer_source=entry.get("tokenizer_source", "adapter"),
         chat_template_source=entry.get("chat_template_source", "adapter"),
         use_fast_tokenizer=entry.get("use_fast_tokenizer", True),
+        runtime_weight_mode=entry.get("runtime_weight_mode", "auto"),
         description=entry.get("description", ""),
     )
 
@@ -171,6 +183,7 @@ def get_generation_defaults():
     data = _read_json_file(GENERATION_DEFAULTS_PATH)
     return {
         "max_new_tokens": int(data.get("max_new_tokens", 128)),
+        "num_candidates": int(data.get("num_candidates", 1)),
         "do_sample": bool(data.get("do_sample", True)),
         "temperature": float(data.get("temperature", 0.7)),
         "top_p": float(data.get("top_p", 0.9)),
