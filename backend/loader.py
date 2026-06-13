@@ -903,6 +903,11 @@ def _should_retry_after_throughput_profile(profile_debug, exc: Exception):
 
 def load_model_bundle(spec, logger=None):
     apply_runtime_compat_shims(logger=logger)
+    if str(getattr(spec, "backend", "transformers")).strip().lower() == "llama_cpp":
+        from .llama_cpp_loader import load_llama_cpp_bundle
+
+        return load_llama_cpp_bundle(spec, logger=logger)
+
     torch = _import_torch()
     effective_spec, profile_debug = _choose_effective_spec_for_throughput(spec, torch)
 

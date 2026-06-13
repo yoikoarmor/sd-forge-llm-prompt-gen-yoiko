@@ -1,0 +1,123 @@
+{
+  "required": {
+    "subject": [
+      "a young woman in a flowing dress",
+      "an armored knight",
+      "a cyberpunk mercenary",
+      "a white cat",
+      "an old fisherman",
+      "a robot librarian",
+      "a witch with a broom",
+      "a samurai in worn armor",
+      "a ballerina mid-spin",
+      "a street musician with a guitar",
+      "a dragon coiled around a tower",
+      "an astronaut",
+      "a school girl with a backpack",
+      "an elf archer",
+      "a steampunk inventor",
+      "a maid with silver hair",
+      "a wolf in the snow",
+      "a pirate captain",
+      "a shrine maiden",
+      "a race queen"
+    ]
+  },
+  "optional": {
+    "setting": {
+      "probability": 0.8,
+      "items": [
+        "in a ruined cathedral",
+        "on a neon-lit street at night",
+        "in a sunflower field",
+        "on a cliff overlooking the sea",
+        "in a cozy library",
+        "in a futuristic city",
+        "inside an abandoned factory",
+        "in a bamboo forest",
+        "on a rainy crosswalk",
+        "in a desert with ancient ruins",
+        "on a rooftop at dusk",
+        "in a snowy mountain village",
+        "in a small flower shop",
+        "underwater among coral reefs",
+        "in a train station at rush hour",
+        "in a floating castle in the sky"
+      ]
+    },
+    "lighting": {
+      "probability": 0.6,
+      "items": [
+        "golden hour lighting",
+        "dramatic rim lighting",
+        "soft window light",
+        "moonlight",
+        "neon glow",
+        "candlelight",
+        "overcast diffuse light",
+        "harsh midday sun",
+        "backlit silhouette",
+        "volumetric god rays"
+      ]
+    },
+    "style": {
+      "probability": 0.7,
+      "items": [
+        "anime style",
+        "watercolor painting",
+        "oil painting",
+        "photorealistic",
+        "ukiyo-e style",
+        "flat pastel illustration",
+        "dark fantasy concept art",
+        "retro 90s anime style",
+        "cel shaded",
+        "impressionist style"
+      ]
+    },
+    "mood": {
+      "probability": 0.5,
+      "items": [
+        "melancholic atmosphere",
+        "cheerful and bright",
+        "mysterious",
+        "serene and peaceful",
+        "tense and dramatic",
+        "nostalgic",
+        "whimsical",
+        "ominous",
+        "romantic",
+        "lonely"
+      ]
+    },
+    "composition": {
+      "probability": 0.4,
+      "items": [
+        "close-up portrait",
+        "full body shot",
+        "wide angle shot",
+        "view from above",
+        "low angle shot",
+        "over-the-shoulder view",
+        "centered symmetrical composition",
+        "dutch angle",
+        "profile view"
+      ]
+    },
+    "extra": {
+      "probability": 0.3,
+      "items": [
+        "intricate details",
+        "wind blowing",
+        "falling petals",
+        "rain droplets",
+        "lens flare",
+        "depth of field",
+        "motion blur",
+        "reflections on wet ground",
+        "sparkling particles",
+        "light fog"
+      ]
+    }
+  }
+}

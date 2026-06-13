@@ -179,6 +179,17 @@ def is_generated_prompt_strong_enough(text):
     if not cleaned:
         return False, "empty"
 
+    lowered = cleaned.lower()
+    reasoning_markers = (
+        "thinking process:",
+        "analyze the request",
+        "**analyze",
+        "**task:",
+        "**constraints:",
+    )
+    if any(marker in lowered for marker in reasoning_markers):
+        return False, "reasoning_text_detected"
+
     prompt_parts = [item.strip() for item in cleaned.split(",") if item.strip()]
     if len(cleaned) < 10:
         return False, "too_short_chars"

@@ -1,0 +1,38 @@
+{
+  "forge": {
+    "base_url": "http://127.0.0.1:7860",
+    "request_timeout_seconds": 900
+  },
+  "generation": {
+    "count": 20,
+    "negative_prompt": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, jpeg artifacts, signature, watermark, username, blurry",
+    "steps": 28,
+    "width": 1024,
+    "height": 1024,
+    "cfg_scale": 5.0,
+    "sampler_name": "Euler a",
+    "seed": -1
+  },
+  "llm_extension": {
+    "script_title": "LLM Prompt Gen (Yoiko)",
+    "enabled": true,
+    "model": "qwen3.5-4b",
+    "load_mode": "keep_loaded",
+    "weight_mode": "auto",
+    "max_new_tokens": 128,
+    "num_candidates": 1
+  },
+  "scoring": {
+    "clip_model": "openai/clip-vit-large-patch14",
+    "enable_vlm": true,
+    "vlm_model": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "vlm_load_in_4bit": true,
+    "vlm_max_new_tokens": 256,
+    "unload_forge_checkpoint_during_vlm": true,
+    "use_discriminator_if_available": true
+  },
+  "paths": {
+    "output_dir": "output",
+    "wordpool": "wordpool.json"
+  }
+}

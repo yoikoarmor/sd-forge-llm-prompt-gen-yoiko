@@ -181,6 +181,7 @@ final_positive = dedupe(processed_gen_prompt + ", " + original_prompt)
 
 `model_registry.json` 既定の主項目:
 
+- `backend`
 - `base_model_name_or_path`
 - `adapter_path`
 - `tokenizer_name_or_path`
@@ -200,6 +201,69 @@ final_positive = dedupe(processed_gen_prompt + ", " + original_prompt)
 - `tokenizer_source`
 - `chat_template_source`
 - `use_fast_tokenizer`
+- `gguf_path`
+- `gguf_repo_id`
+- `gguf_filename`
+- `gguf_lora_path`
+- `n_ctx`
+- `n_gpu_layers`
+- `n_batch`
+- `n_threads`
+- `flash_attn`
+- `thinking_suppression`
+
+### 7.1 Transformers backend
+
+既定の `backend` は `transformers`。
+既存の Hugging Face base model + PEFT LoRA 経路はこの backend を使う。
+
+主な特徴:
+
+- `LLM Weight Mode` の `auto` / `4bit` / `bf16_merge` が有効
+- `load_in_4bit`、`merge_lora_for_inference`、`device_map` などを利用
+- `tokenizer_source` と `chat_template_source` は adapter / base / explicit path に対応
+
+### 7.2 llama_cpp / GGUF backend
+
+`backend: "llama_cpp"` の registry entry は `llama-cpp-python` で GGUF を読み込む。
+Transformers / PEFT はロードしない。
+
+利用可能な GGUF 指定:
+
+- `gguf_path`
+  - ローカル GGUF ファイル
+- `gguf_repo_id` + `gguf_filename`
+  - Hugging Face Hub 上の GGUF ファイル
+
+主な llama.cpp 設定:
+
+- `n_ctx`
+- `n_gpu_layers`
+- `n_batch`
+- `n_threads`
+- `flash_attn`
+
+仕様:
+
+- `llama_cpp` import は loader 内で遅延 import する
+- `llama-cpp-python` がない場合は `MissingDependencyError` を出す
+- `LLM Weight Mode` は無視し、ログに `weight_mode ignored for llama_cpp backend` を出す
+- `thinking_suppression` は `auto` / `no_think` / `none`
+- `auto` では GGUF metadata の `general.architecture` が Qwen 系で、chat template に thinking marker がある場合のみ `/no_think` を追加する
+- `no_think` は registry override として常に `/no_think` を追加する
+- `none` は registry override として `/no_think` を追加しない
+- 既存の `<think>` 除去後処理は llama_cpp 経路でも通す
+- runtime unload 時に `model.close()` があれば呼ぶ
+- 候補数が複数の場合は llama.cpp の chat completion を候補数分だけ呼ぶ
+
+関連ツール:
+
+- `tools/convert_to_gguf.py`
+  - base + LoRA を merge して llama.cpp の `convert_hf_to_gguf.py` / `llama-quantize` へ渡す
+  - 既定の llama.cpp ref は `1593d5684d077c07fc788e9527ec1bd52287de7f`
+  - `--llama-cpp-ref` で tag / commit を上書きできる
+- `tools/smoke_gguf.py`
+  - GGUF ロードと簡易プロンプト生成を単体確認する
 
 ## 8. ダウンロード / キャッシュ仕様
 
@@ -315,6 +379,13 @@ seed 仕様:
 - `bitsandbytes`
 - `safetensors`
 
+optional GGUF requirements:
+
+- `llama-cpp-python`
+
+`llama-cpp-python` は `requirements.txt` には含めない。
+GGUF 利用者だけ `requirements.gguf.txt` または CUDA wheel 指定でインストールする。
+
 前提:
 
 - NVIDIA GPU + CUDA 系環境を主対象
@@ -346,6 +417,8 @@ base model:
 - 初回 Hugging Face download は時間・容量が必要
 - offline 利用には local path または HF cache が必要
 - Windows では HF cache の symlink warning が出る場合がある
+- GGUF backend は optional dependency のため、未導入環境ではロード時に明示エラーになる
+- Qwen3.5 GGUF は llama.cpp の新しめの変換スクリプトで実機検証が必要
 
 ## 15. 現行推奨設定
 

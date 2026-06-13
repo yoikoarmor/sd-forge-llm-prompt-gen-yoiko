@@ -130,6 +130,100 @@ configs/model_registry.json
 `configs/model_registry.json` は gitignore 対象です。
 このリポジトリでは公開用の既定値を example 側に置いています。
 
+### GGUF / llama.cpp バックエンド
+
+通常の Transformers + LoRA 経路はそのまま利用できます。低VRAM環境や、配布しやすい単体ファイル運用をしたい場合だけ、任意で GGUF バックエンドを使えます。
+
+GGUF は optional 機能です。`requirements.txt` には `llama-cpp-python` を入れていないため、使う場合だけ追加してください。
+
+```bash
+python -m pip install -r requirements.gguf.txt
+```
+
+CUDA wheel を明示して入れる場合の例です。
+
+```bash
+python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
+```
+
+GGUF を使うには、`configs/model_registry.json` に `backend: "llama_cpp"` のモデルを追加します。
+
+```json
+{
+  "models": {
+    "qwen3.5-4b-gguf-q4km": {
+      "enabled": true,
+      "backend": "llama_cpp",
+      "gguf_path": "<path/to/yoiko-qwen3.5-4b-merged-Q4_K_M.gguf>",
+      "n_ctx": 4096,
+      "n_gpu_layers": -1,
+      "n_batch": 512,
+      "thinking_suppression": "auto",
+      "flash_attn": true
+    }
+  }
+}
+```
+
+Hugging Face 上の GGUF ファイルを使う場合は、`gguf_repo_id` と `gguf_filename` を指定できます。
+
+```json
+{
+  "backend": "llama_cpp",
+  "gguf_repo_id": "your-name/your-gguf-repo",
+  "gguf_filename": "model-Q4_K_M.gguf",
+  "local_files_only": false
+}
+```
+
+注意点:
+
+- `LLM Weight Mode` は Transformers 用の設定です。`llama_cpp` バックエンドでは無視され、ログに `weight_mode ignored for llama_cpp backend` が出ます。
+- `thinking_suppression` は `"auto"`, `"no_think"`, `"none"` から選べます。既定は `"auto"` です。
+- `"auto"` では GGUF メタデータの `general.architecture` が Qwen 系で、chat template に `enable_thinking`, `/no_think`, `<think>` などの thinking marker がある場合だけ `/no_think` を付けます。
+- 非対応モデルに `/no_think` が混ざらないよう、非Qwen系または thinking marker なしの template では付与しません。
+- 以前の実装で無条件に `/no_think` を足していた理由は、Qwen thinking モデルの実用ケースと smoke を先に通すための暫定策でした。公開版では副作用が強いため、metadata 判定 + registry override に変更しています。
+- `qwen2.5` / `qwen3` 系は llama.cpp 側で利用例があります。`qwen3.5` 系は llama.cpp の新しめの変換スクリプトで実機検証してください。
+- `llama-cpp-python` が未導入の場合は、LLMロード時に導入方法つきのエラーを出します。
+
+#### GGUF 変換ツール
+
+LoRA を base model に merge して GGUF に変換する補助ツールを同梱しています。
+既定では llama.cpp を `1593d5684d077c07fc788e9527ec1bd52287de7f` に pin して使います。この ref の `convert_hf_to_gguf.py` で Qwen3 系分岐があることを確認しています。
+別の llama.cpp tag / commit を使う場合は `--llama-cpp-ref` を指定してください。
+
+```bash
+python tools/convert_to_gguf.py ^
+  --model-key qwen3.5-4b ^
+  --outdir E:\gguf\yoiko-qwen3.5-4b ^
+  --quant Q4_K_M ^
+  --register
+```
+
+既存の llama.cpp checkout を使う場合:
+
+```bash
+python tools/convert_to_gguf.py ^
+  --model-key qwen3.5-4b ^
+  --outdir E:\gguf\yoiko-qwen3.5-4b ^
+  --llama-cpp-dir E:\tools\llama.cpp ^
+  --llama-cpp-ref 1593d5684d077c07fc788e9527ec1bd52287de7f ^
+  --quantize-bin E:\tools\llama.cpp\build\bin\Release\llama-quantize.exe ^
+  --quant Q4_K_M
+```
+
+コマンドだけ確認したい場合:
+
+```bash
+python tools/convert_to_gguf.py --model-key qwen3.5-4b --outdir E:\gguf\test --dry-run
+```
+
+変換後の簡易テスト:
+
+```bash
+python tools/smoke_gguf.py --gguf-path E:\gguf\yoiko-qwen3.5-4b\qwen3.5-4b-merged-Q4_K_M.gguf --prompt "女性、高身長"
+```
+
 ### 依存関係
 
 この拡張は `install.py` と `requirements.txt` で依存をそろえます。
@@ -270,6 +364,33 @@ bootstrap_forge_env.bat
 
 This repository ships public defaults in `configs/model_registry.example.json`.
 Only create `configs/model_registry.json` when you need local paths or private repository settings.
+
+### GGUF / llama.cpp Backend
+
+The default Transformers + LoRA path is unchanged. GGUF support is optional and is useful when you prefer a single converted model file or a llama.cpp-based low-VRAM path.
+
+Install the optional dependency only when you use GGUF:
+
+```bash
+python -m pip install -r requirements.gguf.txt
+```
+
+Then add a `backend: "llama_cpp"` entry to `configs/model_registry.json`, using either `gguf_path` or `gguf_repo_id` + `gguf_filename`. For remote GGUF files, set `local_files_only` to `false` unless the file is already cached.
+`thinking_suppression` defaults to `auto`; it only appends `/no_think` when GGUF metadata indicates a Qwen-family thinking template. Override with `no_think` or `none` if needed.
+
+Conversion helper:
+
+```bash
+python tools/convert_to_gguf.py --model-key qwen3.5-4b --outdir E:\gguf\yoiko-qwen3.5-4b --quant Q4_K_M --register
+```
+
+The converter pins llama.cpp to `1593d5684d077c07fc788e9527ec1bd52287de7f` by default. Use `--llama-cpp-ref` to override it.
+
+Smoke test:
+
+```bash
+python tools/smoke_gguf.py --gguf-path E:\gguf\yoiko-qwen3.5-4b\qwen3.5-4b-merged-Q4_K_M.gguf --prompt "woman, tall"
+```
 
 ### Notes
 

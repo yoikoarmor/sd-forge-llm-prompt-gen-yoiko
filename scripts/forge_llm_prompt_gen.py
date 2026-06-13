@@ -528,7 +528,19 @@ class ForgeLlmPromptGenScript(scripts.Script):
 
         try:
             spec = get_model_spec(decision.llm_model_name)
-            spec = self._apply_weight_mode_to_spec(spec, decision.llm_weight_mode)
+            backend_name = getattr(spec, "backend", "transformers")
+            if backend_name == "llama_cpp":
+                if decision.llm_weight_mode != "auto":
+                    self._log(
+                        f"weight_mode ignored for llama_cpp backend requested={decision.llm_weight_mode}"
+                    )
+            else:
+                spec = self._apply_weight_mode_to_spec(spec, decision.llm_weight_mode)
+            backend_name = getattr(spec, "backend", "transformers")
+            if backend_name == "llama_cpp":
+                quantization_label = "gguf"
+            else:
+                quantization_label = "int4" if spec.load_in_4bit else "none"
             generation_defaults = dict(get_generation_defaults())
             generation_defaults["max_new_tokens"] = decision.llm_max_new_tokens
             aggressive_cleanup = decision.llm_load_mode != "keep_loaded"
@@ -539,13 +551,14 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 decision.image_model_offloaded_to_ram = self._offload_current_image_model_to_ram()
             self._log(
                 "llm_load_config "
+                f"backend={backend_name} "
                 f"base_model_name_or_path={spec.base_model_name_or_path} "
                 f"adapter_path={spec.adapter_path} "
                 f"tokenizer_name_or_path={spec.tokenizer_name_or_path or spec.base_model_name_or_path} "
                 f"weight_mode={decision.llm_weight_mode} "
                 f"tokenizer_source={spec.tokenizer_source} "
                 f"chat_template_source={spec.chat_template_source} "
-                f"quantization={'int4' if spec.load_in_4bit else 'none'} "
+                f"quantization={quantization_label} "
                 f"bnb_4bit_quant_type={spec.bnb_4bit_quant_type} "
                 f"bnb_4bit_compute_dtype={spec.bnb_4bit_compute_dtype} "
                 f"bnb_4bit_use_double_quant={bool(spec.use_double_quant)} "

@@ -47,6 +47,13 @@ class LlmRuntime:
         self._signature = None
 
         try:
+            close = getattr(bundle.model, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
+        try:
             del bundle.model
         except Exception:
             pass
