@@ -1,5 +1,4 @@
 import copy
-import copy
 import json
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -111,22 +110,48 @@ def _resolve_path(value: str | None, *, allow_remote_id=True):
     return str(extension_candidate)
 
 
-def _get_registry_data():
-    registry_source = MODEL_REGISTRY_PATH
-    if not MODEL_REGISTRY_PATH.exists():
-        if not MODEL_REGISTRY_EXAMPLE_PATH.exists():
-            raise RegistryError(
-                f"Config file not found: {MODEL_REGISTRY_PATH}. "
-                f"Also missing fallback example config: {MODEL_REGISTRY_EXAMPLE_PATH}."
-            )
-        registry_source = MODEL_REGISTRY_EXAMPLE_PATH
-
-    data = _read_json_file(registry_source)
+def _validate_models_object(data, registry_source: Path):
     models = data.get("models")
     if not isinstance(models, dict):
         raise RegistryError(f"{registry_source} must contain a top-level 'models' object.")
-    data["_registry_source"] = registry_source.name
-    return data
+    return models
+
+
+def _merge_model_entries(base_entry, override_entry):
+    if isinstance(base_entry, dict) and isinstance(override_entry, dict):
+        merged = copy.deepcopy(base_entry)
+        merged.update(copy.deepcopy(override_entry))
+        return merged
+    return copy.deepcopy(override_entry)
+
+
+def _get_registry_data():
+    if not MODEL_REGISTRY_EXAMPLE_PATH.exists() and not MODEL_REGISTRY_PATH.exists():
+        raise RegistryError(
+            f"Config file not found: {MODEL_REGISTRY_PATH}. "
+            f"Also missing fallback example config: {MODEL_REGISTRY_EXAMPLE_PATH}."
+        )
+
+    merged_models = {}
+    registry_sources = []
+
+    if MODEL_REGISTRY_EXAMPLE_PATH.exists():
+        example_data = _read_json_file(MODEL_REGISTRY_EXAMPLE_PATH)
+        example_models = _validate_models_object(example_data, MODEL_REGISTRY_EXAMPLE_PATH)
+        merged_models.update(copy.deepcopy(example_models))
+        registry_sources.append(MODEL_REGISTRY_EXAMPLE_PATH.name)
+
+    if MODEL_REGISTRY_PATH.exists():
+        user_data = _read_json_file(MODEL_REGISTRY_PATH)
+        user_models = _validate_models_object(user_data, MODEL_REGISTRY_PATH)
+        for key, entry in user_models.items():
+            merged_models[key] = _merge_model_entries(merged_models.get(key), entry)
+        registry_sources.append(MODEL_REGISTRY_PATH.name)
+
+    return {
+        "models": merged_models,
+        "_registry_source": "+".join(registry_sources),
+    }
 
 
 def get_ui_model_choices(default_choices=None):
