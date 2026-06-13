@@ -228,6 +228,349 @@ def _build_generation_kwargs(tokenizer, generation_defaults):
     return generation_kwargs
 
 
+def _is_llama_cpp_bundle(bundle):
+    load_debug = getattr(bundle, "load_debug", {}) or {}
+    return str(load_debug.get("backend", "")).strip().lower() == "llama_cpp"
+
+
+def _build_llama_cpp_generation_kwargs(generation_defaults, llm_seed):
+    generation_kwargs = {
+        "max_tokens": int(generation_defaults.get("max_new_tokens", 128)),
+        "top_p": float(generation_defaults.get("top_p", 0.9)),
+        "repeat_penalty": float(generation_defaults.get("repetition_penalty", 1.0)),
+        "seed": int(llm_seed),
+    }
+
+    if bool(generation_defaults.get("do_sample", True)):
+        generation_kwargs["temperature"] = float(generation_defaults.get("temperature", 0.7))
+    else:
+        generation_kwargs["temperature"] = 0.0
+
+    top_k = generation_defaults.get("top_k", None)
+    if top_k not in (None, "", False):
+        generation_kwargs["top_k"] = int(top_k)
+
+    return generation_kwargs
+
+
+def _apply_llama_cpp_thinking_control(messages, *, enable_thinking, thinking_suppression_resolved):
+    if enable_thinking or thinking_suppression_resolved != "no_think":
+        return messages, False
+
+    updated = []
+    applied = False
+    for item in messages or []:
+        copied = dict(item)
+        if copied.get("role") == "user" and not applied:
+            content = str(copied.get("content", ""))
+            if "/no_think" not in content:
+                copied["content"] = content.rstrip() + "\n\n/no_think"
+                applied = True
+        updated.append(copied)
+    return updated, applied
+
+
+def _extract_llama_cpp_text(response):
+    try:
+        choices = response.get("choices") or []
+        if not choices:
+            return ""
+        choice = choices[0]
+        message = choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if content is not None:
+                return str(content)
+        if choice.get("text") is not None:
+            return str(choice.get("text"))
+    except Exception:
+        pass
+    return str(response or "")
+
+
+def _build_llama_cpp_raw_prompt(messages, *, force_empty_think_block=False):
+    chunks = []
+    for item in messages or []:
+        role = str(item.get("role", "")).strip() or "user"
+        content = str(item.get("content", ""))
+        chunks.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+    chunks.append("<|im_start|>assistant")
+    if force_empty_think_block:
+        chunks.append("<think>\n\n</think>\n\n")
+    return "\n".join(chunks)
+
+
+def _generate_llama_cpp_completion_once(model, prompt_text, generation_kwargs):
+    completion_kwargs = {
+        "max_tokens": generation_kwargs.get("max_tokens"),
+        "temperature": generation_kwargs.get("temperature", 0.7),
+        "top_p": generation_kwargs.get("top_p", 0.9),
+        "repeat_penalty": generation_kwargs.get("repeat_penalty", 1.0),
+        "seed": generation_kwargs.get("seed"),
+        "stop": ["<|im_end|>"],
+        "echo": False,
+    }
+    if generation_kwargs.get("top_k") is not None:
+        completion_kwargs["top_k"] = generation_kwargs.get("top_k")
+    return model(prompt_text, **completion_kwargs)
+
+
+def _generate_llama_cpp_once(model, messages, generation_kwargs, raw_prompt_text=None):
+    if raw_prompt_text:
+        try:
+            return _generate_llama_cpp_completion_once(model, raw_prompt_text, generation_kwargs)
+        except TypeError as exc:
+            if "seed" not in str(exc):
+                raise GenerationError(str(exc), is_oom=False) from exc
+            fallback_kwargs = dict(generation_kwargs)
+            fallback_kwargs.pop("seed", None)
+            try:
+                return _generate_llama_cpp_completion_once(model, raw_prompt_text, fallback_kwargs)
+            except Exception as fallback_exc:
+                raise GenerationError(str(fallback_exc), is_oom=False) from fallback_exc
+        except Exception as exc:
+            message = str(exc)
+            raise GenerationError(message, is_oom="out of memory" in message.lower()) from exc
+
+    try:
+        return model.create_chat_completion(
+            messages=messages,
+            **generation_kwargs,
+        )
+    except TypeError as exc:
+        if "seed" not in str(exc):
+            raise GenerationError(str(exc), is_oom=False) from exc
+        fallback_kwargs = dict(generation_kwargs)
+        fallback_kwargs.pop("seed", None)
+        try:
+            return model.create_chat_completion(
+                messages=messages,
+                **fallback_kwargs,
+            )
+        except Exception as fallback_exc:
+            raise GenerationError(str(fallback_exc), is_oom=False) from fallback_exc
+    except Exception as exc:
+        message = str(exc)
+        raise GenerationError(message, is_oom="out of memory" in message.lower()) from exc
+
+
+def _log_llama_cpp_generation_context(
+    logger,
+    *,
+    bundle,
+    gen_prompt,
+    original_prompt,
+    negative_prompt,
+    messages,
+    generation_kwargs,
+    input_template_mode,
+    original_prompt_injected_to_llm,
+    llm_seed,
+    seed_mode,
+    enable_thinking,
+    no_think_suffix_applied=False,
+):
+    if not logger:
+        return
+
+    load_debug = getattr(bundle, "load_debug", {}) or {}
+    system_prompt_preview = ""
+    user_prompt_preview = ""
+    for item in messages or []:
+        if item.get("role") == "system" and not system_prompt_preview:
+            system_prompt_preview = item.get("content", "")
+        if item.get("role") == "user" and not user_prompt_preview:
+            user_prompt_preview = item.get("content", "")
+
+    _safe_log(logger, f"gen_prompt_raw={gen_prompt}")
+    _safe_log(logger, f"original_prompt_raw={original_prompt}")
+    _safe_log(logger, f"negative_prompt_raw={negative_prompt}")
+    _safe_log(logger, f"seed_mode={seed_mode}")
+    _safe_log(logger, f"llm_seed={llm_seed}")
+    _safe_log(logger, f"enable_thinking={enable_thinking}")
+    _safe_log(logger, f"llm_input_no_think_suffix_applied={no_think_suffix_applied}")
+    _safe_log(logger, f"input_template_mode={input_template_mode}")
+    _safe_log(logger, f"original_prompt_injected_to_llm={original_prompt_injected_to_llm}")
+    _safe_log(logger, "llm_input_mode=llama_cpp_chat_completion")
+    _safe_log(logger, f"llm_input_chat_template_source={load_debug.get('chat_template_source')}")
+    _safe_log(logger, f"system_prompt_preview={_truncate(system_prompt_preview, 240)}")
+    _safe_log(logger, f"user_prompt_preview={_truncate(user_prompt_preview, 240)}")
+    _safe_log(logger, "llm_input_messages_full_start")
+    _safe_log(logger, str(messages))
+    _safe_log(logger, "llm_input_messages_full_end")
+    _safe_log(
+        logger,
+        "generation_params "
+        f"max_tokens={generation_kwargs.get('max_tokens')} "
+        f"temperature={generation_kwargs.get('temperature')} "
+        f"top_p={generation_kwargs.get('top_p')} "
+        f"top_k={generation_kwargs.get('top_k')} "
+        f"repeat_penalty={generation_kwargs.get('repeat_penalty')} "
+        f"seed={generation_kwargs.get('seed')}"
+    )
+
+
+def _generate_prompt_candidates_llama_cpp(
+    bundle,
+    gen_prompt,
+    original_prompt,
+    negative_prompt,
+    generation_defaults,
+    interrupt_checker=None,
+    logger=None,
+    num_candidates: int = 1,
+):
+    input_template_mode = generation_defaults.get("input_template_mode", "simple_chat_template")
+    payload = _build_input_payload(
+        input_template_mode,
+        gen_prompt,
+        original_prompt,
+        negative_prompt,
+    )
+    messages = payload["messages"]
+    llm_seed, seed_mode = _resolve_llm_seed(generation_defaults)
+    enable_thinking = generation_defaults.get("enable_thinking", False)
+    load_debug = getattr(bundle, "load_debug", {}) or {}
+    thinking_suppression_resolved = str(
+        load_debug.get("thinking_suppression_resolved", "none") or "none"
+    ).strip().lower()
+    messages, no_think_suffix_applied = _apply_llama_cpp_thinking_control(
+        messages,
+        enable_thinking=enable_thinking,
+        thinking_suppression_resolved=thinking_suppression_resolved,
+    )
+    raw_prompt_text = None
+    if no_think_suffix_applied:
+        raw_prompt_text = _build_llama_cpp_raw_prompt(
+            messages,
+            force_empty_think_block=True,
+        )
+    generation_kwargs = _build_llama_cpp_generation_kwargs(generation_defaults, llm_seed)
+    effective_num_candidates = max(1, int(num_candidates))
+
+    _log_llama_cpp_generation_context(
+        logger,
+        bundle=bundle,
+        gen_prompt=gen_prompt,
+        original_prompt=original_prompt,
+        negative_prompt=negative_prompt,
+        messages=messages,
+        generation_kwargs=generation_kwargs,
+        input_template_mode=payload["input_template_mode"],
+        original_prompt_injected_to_llm=payload["original_prompt_injected_to_llm"],
+        llm_seed=llm_seed,
+        seed_mode=seed_mode,
+        enable_thinking=enable_thinking,
+        no_think_suffix_applied=no_think_suffix_applied,
+    )
+
+    if interrupt_checker and interrupt_checker():
+        return GenerationResult(
+            llm_called=False,
+            input_debug={
+                "messages": messages,
+                "input_mode": "llama_cpp_chat_completion",
+                "input_template_mode": payload["input_template_mode"],
+                "original_prompt_injected_to_llm": payload["original_prompt_injected_to_llm"],
+                "generation_kwargs": generation_kwargs,
+                "llm_seed": llm_seed,
+                "seed_mode": seed_mode,
+                "enable_thinking": enable_thinking,
+                "thinking_suppression_resolved": thinking_suppression_resolved,
+                "no_think_suffix_applied": no_think_suffix_applied,
+            },
+            interrupted=True,
+        )
+
+    started_at = time.perf_counter()
+    candidate_texts = []
+    candidate_debugs = []
+    chosen_index = -1
+    chosen_cleaned = ""
+    chosen_reject_reason = ""
+    try:
+        for idx in range(effective_num_candidates):
+            if interrupt_checker and interrupt_checker():
+                return GenerationResult(
+                    llm_called=bool(candidate_texts),
+                    candidates=[t for t in candidate_texts if t],
+                    candidate_debug=candidate_debugs,
+                    interrupted=True,
+                    llm_seed=llm_seed,
+                    seed_mode=seed_mode,
+                )
+            per_candidate_kwargs = dict(generation_kwargs)
+            per_candidate_kwargs["seed"] = int(llm_seed) + idx
+            response = _generate_llama_cpp_once(
+                bundle.model,
+                messages,
+                per_candidate_kwargs,
+                raw_prompt_text=raw_prompt_text,
+            )
+            raw_output = _extract_llama_cpp_text(response)
+            normalized_output = normalize_model_output(raw_output)
+            cleaned_output = clean_generated_positive(normalized_output)
+            usable, reject_reason = is_generated_prompt_strong_enough(cleaned_output)
+            accepted_for_this = usable and chosen_index < 0
+            candidate_texts.append(cleaned_output)
+            candidate_debugs.append(
+                _make_candidate_debug(
+                    index=idx,
+                    raw_output=raw_output,
+                    normalized_output=normalized_output,
+                    cleaned_output=cleaned_output,
+                    accepted=accepted_for_this,
+                    reject_reason=reject_reason,
+                )
+            )
+            if accepted_for_this:
+                chosen_index = idx
+                chosen_cleaned = cleaned_output
+                chosen_reject_reason = ""
+        if chosen_index < 0 and candidate_debugs:
+            chosen_index = 0
+            chosen_cleaned = candidate_texts[0]
+            chosen_reject_reason = candidate_debugs[0].get("reject_reason", "")
+    except Exception:
+        raise
+
+    generate_seconds = time.perf_counter() - started_at
+    _safe_log(logger, f"llm_generate_seconds={generate_seconds:.3f} num_candidates={effective_num_candidates}")
+
+    chosen_debug = candidate_debugs[chosen_index] if chosen_index >= 0 else {}
+    usable = chosen_debug.get("accepted", False) if chosen_debug else False
+    fallback_used = not usable
+    fallback_reason = chosen_reject_reason if fallback_used else ""
+    selected_positive = chosen_cleaned if usable else build_manual_positive(gen_prompt, "")
+
+    return GenerationResult(
+        llm_called=True,
+        candidates=[t for t in candidate_texts if t],
+        candidate_debug=candidate_debugs,
+        chosen_candidate=chosen_cleaned,
+        chosen_candidate_debug=chosen_debug,
+        selected_positive=selected_positive,
+        fallback_used=fallback_used,
+        fallback_reason=fallback_reason,
+        llm_seed=llm_seed,
+        seed_mode=seed_mode,
+        input_debug={
+            "messages": messages,
+            "input_mode": "llama_cpp_chat_completion",
+            "input_template_mode": payload["input_template_mode"],
+            "original_prompt_injected_to_llm": payload["original_prompt_injected_to_llm"],
+            "generation_kwargs": generation_kwargs,
+            "llm_seed": llm_seed,
+            "seed_mode": seed_mode,
+            "enable_thinking": enable_thinking,
+            "thinking_suppression_resolved": thinking_suppression_resolved,
+            "no_think_suffix_applied": no_think_suffix_applied,
+        },
+        interrupted=False,
+        generate_seconds=generate_seconds,
+    )
+
+
 def _generate_once(model, inputs, generation_kwargs, torch):
     try:
         with torch.no_grad():
@@ -418,6 +761,18 @@ def generate_prompt_candidates(
     aggressive_cleanup: bool = True,
     num_candidates: int = 1,
 ):
+    if _is_llama_cpp_bundle(bundle):
+        return _generate_prompt_candidates_llama_cpp(
+            bundle=bundle,
+            gen_prompt=gen_prompt,
+            original_prompt=original_prompt,
+            negative_prompt=negative_prompt,
+            generation_defaults=generation_defaults,
+            interrupt_checker=interrupt_checker,
+            logger=logger,
+            num_candidates=num_candidates,
+        )
+
     torch = _import_torch()
 
     input_template_mode = generation_defaults.get("input_template_mode", "simple_chat_template")
@@ -563,6 +918,7 @@ def generate_prompt_candidates(
             "system_prompt_preview": prepared_input.system_prompt_preview,
             "user_prompt_preview": prepared_input.user_prompt_preview,
             "generation_kwargs": generation_kwargs,
+            "raw_prompt_text": raw_prompt_text,
             "llm_seed": llm_seed,
             "seed_mode": seed_mode,
             "enable_thinking": enable_thinking,

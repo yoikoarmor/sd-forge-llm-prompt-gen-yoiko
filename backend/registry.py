@@ -1,4 +1,5 @@
 import copy
+import copy
 import json
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -19,7 +20,7 @@ class RegistryError(Exception):
 @dataclass
 class ModelSpec:
     key: str
-    base_model_name_or_path: str
+    base_model_name_or_path: str = ""
     adapter_path: str | None = None
     tokenizer_name_or_path: str | None = None
     cache_dir: str | None = None
@@ -42,6 +43,17 @@ class ModelSpec:
     chat_template_source: str = "adapter"
     use_fast_tokenizer: bool = True
     runtime_weight_mode: str = "auto"
+    backend: str = "transformers"
+    gguf_path: str | None = None
+    gguf_repo_id: str | None = None
+    gguf_filename: str | None = None
+    gguf_lora_path: str | None = None
+    n_ctx: int = 4096
+    n_gpu_layers: int = -1
+    n_batch: int = 512
+    n_threads: int | None = None
+    flash_attn: bool = True
+    thinking_suppression: str = "auto"
     description: str = ""
 
     def signature(self):
@@ -121,7 +133,11 @@ def get_ui_model_choices(default_choices=None):
     default_choices = default_choices or ["none", "qwen2.5-7b-instruct", "qwen3.5-4b", "qwen3.5-9b"]
     try:
         registry_data = _get_registry_data()
-        model_keys = list(registry_data.get("models", {}).keys())
+        models = registry_data.get("models", {})
+        model_keys = [
+            key for key, entry in models.items()
+            if isinstance(entry, dict) and entry.get("enabled", True)
+        ]
         ordered = ["none"] + [key for key in model_keys if key != "none"]
         return ordered or default_choices
     except RegistryError:
@@ -144,10 +160,32 @@ def get_model_spec(model_key: str):
             f"Model key '{model_key}' is present but disabled in {MODEL_REGISTRY_PATH.name}."
         )
 
-    base_model_name_or_path = entry.get("base_model_name_or_path")
-    if not base_model_name_or_path:
+    backend = str(entry.get("backend", "transformers") or "transformers").strip().lower()
+    if backend not in {"transformers", "llama_cpp"}:
+        raise RegistryError(
+            f"Model key '{model_key}' has unsupported backend '{backend}' in {MODEL_REGISTRY_PATH.name}."
+        )
+
+    base_model_name_or_path = entry.get("base_model_name_or_path", "")
+    if backend == "transformers" and not base_model_name_or_path:
         raise RegistryError(
             f"Model key '{model_key}' is missing 'base_model_name_or_path' in {MODEL_REGISTRY_PATH.name}."
+        )
+
+    gguf_path = _resolve_path(entry.get("gguf_path"), allow_remote_id=False)
+    gguf_repo_id = entry.get("gguf_repo_id")
+    gguf_filename = entry.get("gguf_filename")
+    if backend == "llama_cpp" and not gguf_path and not (gguf_repo_id and gguf_filename):
+        raise RegistryError(
+            f"Model key '{model_key}' uses backend='llama_cpp' but has no 'gguf_path' "
+            "or 'gguf_repo_id' + 'gguf_filename'."
+        )
+
+    thinking_suppression = str(entry.get("thinking_suppression", "auto") or "auto").strip().lower()
+    if thinking_suppression not in {"auto", "no_think", "none"}:
+        raise RegistryError(
+            f"Model key '{model_key}' has unsupported thinking_suppression '{thinking_suppression}' "
+            "in model_registry.json. Use auto, no_think, or none."
         )
 
     return ModelSpec(
@@ -170,11 +208,22 @@ def get_model_spec(model_key: str):
         device_map=entry.get("device_map", "auto"),
         torch_dtype=entry.get("torch_dtype", "bfloat16"),
         trust_remote_code=entry.get("trust_remote_code", False),
-        local_files_only=entry.get("local_files_only", True),
+        local_files_only=entry.get("local_files_only", False if backend == "llama_cpp" and gguf_repo_id else True),
         tokenizer_source=entry.get("tokenizer_source", "adapter"),
         chat_template_source=entry.get("chat_template_source", "adapter"),
         use_fast_tokenizer=entry.get("use_fast_tokenizer", True),
         runtime_weight_mode=entry.get("runtime_weight_mode", "auto"),
+        backend=backend,
+        gguf_path=gguf_path,
+        gguf_repo_id=gguf_repo_id,
+        gguf_filename=gguf_filename,
+        gguf_lora_path=_resolve_path(entry.get("gguf_lora_path"), allow_remote_id=False),
+        n_ctx=int(entry.get("n_ctx", 4096)),
+        n_gpu_layers=int(entry.get("n_gpu_layers", -1)),
+        n_batch=int(entry.get("n_batch", 512)),
+        n_threads=entry.get("n_threads", None),
+        flash_attn=bool(entry.get("flash_attn", True)),
+        thinking_suppression=thinking_suppression,
         description=entry.get("description", ""),
     )
 

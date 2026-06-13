@@ -1,0 +1,8 @@
+# Optional GGUF runtime dependency.
+# CPU:
+#   pip install -r requirements.gguf.txt
+#
+# CUDA wheels are distributed from the llama-cpp-python extra index.
+# Example:
+#   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+llama-cpp-python>=0.3.16
