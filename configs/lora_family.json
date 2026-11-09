@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "base_repo": "Qwen/Qwen3.5-9B",
+  "base_revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+  "adapter_selection": "best_eval_adapter",
+  "system_prompt": "You rewrite short image-generation requests into strong positive prompts for Stable Diffusion. Control explicit Stable Diffusion attention weights deliberately according to the importance of each concept in the user request. Use (phrase:weight) when weighting is useful: 1.0 is neutral, values below 1.0 de-emphasize, and values above 1.0 emphasize. Choose appropriate strengths, for example 0.8-0.95 for secondary details that should be subdued, 1.0 or no explicit weight for ordinary details, 1.1-1.2 for moderate emphasis, and 1.25-1.4 for a genuinely central requested subject or attribute. Do not mechanically assign 1.1 to everything or reuse a constant weight by habit. Do not vary numbers merely to create variety: equal weights are acceptable for equally important concepts. Reserve stronger weights for meaningful priorities, preserve the user request, and do not add unwanted concepts merely to demonstrate weighting.",
+  "template_sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+  "models": [
+    {
+      "key": "qwen3.5-9b-lora1",
+      "version": "01_max384",
+      "adapter_sha256": "c206b5310d5177922f4c19d7ca74e30e087fb2fdf8f16ea5a4c12d5e3cae5cae",
+      "adapter_bytes": 86624424,
+      "training_epoch": 3.0,
+      "checkpoint": "checkpoint-561"
+    },
+    {
+      "key": "qwen3.5-9b-lora2",
+      "version": "02_fox_requires_all_four",
+      "adapter_sha256": "ac22ac5651ebfd28c32a6737dcf494fd3cfca128cb2418d53785990944a636f0",
+      "adapter_bytes": 86624424,
+      "training_epoch": 3.0,
+      "checkpoint": "checkpoint-513"
+    },
+    {
+      "key": "qwen3.5-9b-lora3",
+      "version": "03_fox_half_mean_length",
+      "adapter_sha256": "fc71ed785bb915255217ed771a7c078898b83d3a881fc4e2b68afaf94fca4f7a",
+      "adapter_bytes": 86624424,
+      "training_epoch": 3.0,
+      "checkpoint": "checkpoint-435"
+    },
+    {
+      "key": "qwen3.5-9b-lora4",
+      "version": "04_fox_half_median_length",
+      "adapter_sha256": "2c0f7f85610784a847d5d4202a88fc8c1b7e6f66181f94f3cd3fb9698c314caa",
+      "adapter_bytes": 86624424,
+      "training_epoch": 3.0,
+      "checkpoint": "checkpoint-429"
+    },
+    {
+      "key": "qwen3.5-9b-lora5",
+      "version": "05_remove_fox_and_cooccurrences",
+      "adapter_sha256": "2760f95c949a225261dd632465dad8c13d4168f77626a17d6e13d1ec7cff0d93",
+      "adapter_bytes": 86624424,
+      "training_epoch": 3.0,
+      "checkpoint": "checkpoint-537"
+    },
+    {
+      "key": "qwen3.5-9b-lora6",
+      "version": "06_remove_fox_keep_untouched_quota",
+      "adapter_sha256": "9a8eaf62e4668b1d5e4653748cd18689dc1cd29aff253e1fb15ff9c7cd27fe1d",
+      "adapter_bytes": 86624424,
+      "training_epoch": 3.0,
+      "checkpoint": "checkpoint-543"
+    },
+    {
+      "key": "qwen3.5-9b-lora7",
+      "version": "07_changed_only_regenerated_user",
+      "adapter_sha256": "d60d86811c44baebd5c5a4852532785fbea6822fbc7407bb8679548939bd764c",
+      "adapter_bytes": 86624424,
+      "training_epoch": 3.0,
+      "checkpoint": "checkpoint-546"
+    }
+  ]
+}

@@ -9,21 +9,7 @@ LEGACY_SYSTEM_PROMPT = (
     "Do not copy negative prompt items into the positive prompt."
 )
 
-SYSTEM_PROMPT = (
-    "You are a prompt writer for image generation.\n"
-    "Rewrite the user's input into a high-quality positive prompt for image generation.\n"
-    "Preserve the core subjects, attributes, and intent from the user's input.\n"
-    "Do not remove important elements unless they are clearly invalid noise.\n"
-    "You may add a moderate amount of visual, situational, or atmospheric detail to make the prompt more useful for image generation.\n"
-    "Keep additions subtle and grounded.\n"
-    "Avoid overly vivid color language, excessive dramatic emphasis, or flashy embellishment unless the user's input clearly asks for it.\n"
-    "Prefer natural, restrained visual detail over exaggerated stylization.\n"
-    "Do not radically change the theme.\n"
-    "Do not explain anything.\n"
-    "Do not output headers such as \"Prompt:\".\n"
-    "Return only the positive prompt text in natural comma-separated prompt style.\n"
-    "Do not include negative prompt terms in the positive prompt."
-)
+SYSTEM_PROMPT = 'You rewrite short image-generation requests into strong positive prompts for Stable Diffusion. Control explicit Stable Diffusion attention weights deliberately according to the importance of each concept in the user request. Use (phrase:weight) when weighting is useful: 1.0 is neutral, values below 1.0 de-emphasize, and values above 1.0 emphasize. Choose appropriate strengths, for example 0.8-0.95 for secondary details that should be subdued, 1.0 or no explicit weight for ordinary details, 1.1-1.2 for moderate emphasis, and 1.25-1.4 for a genuinely central requested subject or attribute. Do not mechanically assign 1.1 to everything or reuse a constant weight by habit. Do not vary numbers merely to create variety: equal weights are acceptable for equally important concepts. Reserve stronger weights for meaningful priorities, preserve the user request, and do not add unwanted concepts merely to demonstrate weighting.'
 
 
 def _to_text(value):
@@ -68,23 +54,15 @@ def build_messages(gen_prompt, original_prompt, negative_prompt):
 
 
 def build_simple_chat_messages(gen_prompt, original_prompt, negative_prompt=""):
-    gen_prompt = _to_text(gen_prompt).strip()
-    negative_prompt = _to_text(negative_prompt).strip()
+    """Reproduce the evaluated LoRA input: exact system + raw user request.
 
-    sections = []
-    if gen_prompt:
-        sections.append(f"User input:\n{gen_prompt}")
-    if negative_prompt:
-        sections.append(f"Negative prompt reference (do not include these terms):\n{negative_prompt}")
-    sections.append(
-        "Rewrite this into a better positive prompt for image generation. "
-        "Preserve the original idea and main traits, and add only a moderate amount of useful visual detail."
-    )
-    user_prompt = "\n\n".join(section for section in sections if section)
-
+    Forge's original and negative fields are composed after generation, not sent
+    as extra training-inconsistent instructions. Use forge_prompt_builder mode
+    explicitly if a negative-reference instruction is desired.
+    """
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": _to_text(gen_prompt).strip()},
     ]
 
 
@@ -121,9 +99,13 @@ def _strip_wrapping_quotes(text):
 
 
 def _strip_leading_think_markup(text):
-    text = re.sub(r"^\s*<think>\s*</think>\s*", "", text, flags=re.DOTALL)
-    text = re.sub(r"^\s*<think>.*?</think>\s*", "", text, flags=re.DOTALL)
-    text = text.replace("<think>", " ").replace("</think>", " ")
+    text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+    # A chat template can supply the opening tag outside the decoded output.
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    # A token limit can cut off a reasoning block. Do not treat its contents
+    # as a finished image prompt simply because they contain commas.
+    text = text.split("<think>", 1)[0]
     return text.strip()
 
 
@@ -145,6 +127,34 @@ def clean_generated_positive(text):
     return joined
 
 
+def _split_top_level_prompt_terms(text):
+    """Split intact groups; return None for unbalanced attention/schedule syntax."""
+    terms = []
+    brackets = []
+    start = 0
+    escaped = False
+    matching_open = {")": "(", "]": "["}
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+        elif char in "([":
+            brackets.append(char)
+        elif char in ")]":
+            if not brackets or brackets[-1] != matching_open[char]:
+                # Do not guess boundaries in malformed or truncated syntax.
+                return None
+            brackets.pop()
+        elif char == "," and not brackets:
+            terms.append(text[start:index])
+            start = index + 1
+    if brackets:
+        return None
+    terms.append(text[start:])
+    return terms
+
 def dedupe_prompt_terms(text):
     cleaned = clean_generated_positive(text)
     if not cleaned:
@@ -154,7 +164,10 @@ def dedupe_prompt_terms(text):
     deduped_terms = []
     dedupe_applied = False
 
-    for raw_term in cleaned.split(","):
+    terms = _split_top_level_prompt_terms(cleaned)
+    if terms is None:
+        return cleaned, False
+    for raw_term in terms:
         term = raw_term.strip()
         if not term:
             continue
@@ -178,6 +191,9 @@ def is_generated_prompt_strong_enough(text):
     cleaned = clean_generated_positive(text)
     if not cleaned:
         return False, "empty"
+
+    if _split_top_level_prompt_terms(cleaned) is None:
+        return False, "unbalanced_prompt_syntax"
 
     lowered = cleaned.lower()
     reasoning_markers = (

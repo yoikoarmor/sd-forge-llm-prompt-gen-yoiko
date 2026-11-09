@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import os
 import time
@@ -69,6 +70,7 @@ def _resolve_gguf_path(spec, logger=None):
                 repo_id=spec.gguf_repo_id,
                 filename=spec.gguf_filename,
                 cache_dir=spec.cache_dir,
+                revision=getattr(spec, "gguf_revision", None),
                 local_files_only=spec.local_files_only,
             )
         except Exception as exc:
@@ -146,6 +148,8 @@ def _get_metadata_value(metadata, *keys):
 
 
 def _resolve_thinking_suppression(spec, metadata):
+    if getattr(spec, "gguf_prompt_mode", "legacy") == "embedded_template":
+        return "embedded_template", "registry_embedded_template"
     requested = str(getattr(spec, "thinking_suppression", "auto") or "auto").strip().lower()
     if requested == "no_think":
         return "no_think", "registry_override"
@@ -176,6 +180,15 @@ def load_llama_cpp_bundle(spec, logger=None):
     Llama = _import_llama_cpp(logger=logger)
     gguf_path, gguf_source, gguf_download_finished = _resolve_gguf_path(spec, logger=logger)
 
+    expected_hash = getattr(spec, "gguf_sha256", None)
+    if expected_hash:
+        digest = hashlib.sha256()
+        with open(gguf_path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest().lower() != expected_hash.lower():
+            raise ModelLoadError(f"GGUF SHA256 mismatch: {gguf_path}")
+
     llama_kwargs = {
         "model_path": gguf_path,
         "n_ctx": int(spec.n_ctx),
@@ -184,6 +197,8 @@ def load_llama_cpp_bundle(spec, logger=None):
         "flash_attn": bool(spec.flash_attn),
         "verbose": False,
     }
+    if spec.gguf_lora_path:
+        llama_kwargs["lora_path"] = spec.gguf_lora_path
     if spec.n_threads is not None:
         llama_kwargs["n_threads"] = int(spec.n_threads)
 
@@ -246,6 +261,7 @@ def load_llama_cpp_bundle(spec, logger=None):
         "tokenizer_source": "gguf_chat_template",
         "chat_template_source": "gguf_metadata",
         "thinking_suppression": getattr(spec, "thinking_suppression", "auto"),
+        "gguf_prompt_mode": getattr(spec, "gguf_prompt_mode", "legacy"),
         "thinking_suppression_resolved": thinking_suppression_resolved,
         "thinking_suppression_reason": thinking_suppression_reason,
         "quantization_fallback_used": False,

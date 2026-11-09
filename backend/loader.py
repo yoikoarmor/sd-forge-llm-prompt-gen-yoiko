@@ -1,3 +1,6 @@
+import gc
+import hashlib
+import re
 import inspect
 import json
 import time
@@ -55,6 +58,11 @@ BASE_MODEL_ALLOW_PATTERNS = [
     "*.json",
     "*.safetensors",
     "*.bin",
+    "*.jinja",
+    "*.model",
+    "merges.txt",
+    "LICENSE*",
+    "NOTICE*",
 ]
 TOKENIZER_ALLOW_PATTERNS = [
     "tokenizer.json",
@@ -126,13 +134,8 @@ def _safe_log(logger, message):
 
 
 def _looks_like_remote_id(value: str):
-    normalized = str(value).replace("\\", "/")
-    return (
-        "/" in normalized
-        and not normalized.startswith("./")
-        and not normalized.startswith("../")
-        and normalized.count("/") == 1
-    )
+    # A missing Windows path (C:\models) must never become an HF repo ID.
+    return bool(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*", str(value)))
 
 
 def _read_probe(path: Path, *, binary=False):
@@ -223,7 +226,7 @@ def _format_hf_error(exc, label: str, reference: str):
     return f"{label} download failed for {reference}: {message}"
 
 
-def _probe_cache_hit(try_to_load_from_cache, reference: str, cache_dir: str | None, probe_filenames):
+def _probe_cache_hit(try_to_load_from_cache, reference: str, cache_dir: str | None, probe_filenames, revision=None):
     for filename in probe_filenames or []:
         try:
             cached_path = try_to_load_from_cache(
@@ -231,6 +234,7 @@ def _probe_cache_hit(try_to_load_from_cache, reference: str, cache_dir: str | No
                 filename,
                 cache_dir=cache_dir,
                 repo_type="model",
+                revision=revision,
             )
         except Exception:
             cached_path = None
@@ -262,6 +266,7 @@ def _resolve_reference(
     download_strategy="snapshot",
     fallback_reference: str | None = None,
     allow_missing_fallback=False,
+    revision=None,
 ):
     if not reference:
         return ResolvedReference(original_reference=reference, source="none")
@@ -287,6 +292,7 @@ def _resolve_reference(
             reference,
             cache_dir,
             probe_filenames or ["config.json"],
+            revision=revision,
         )
         _safe_log(logger, f"{label}_source=huggingface")
         if download_strategy == "defer_to_loader":
@@ -299,19 +305,18 @@ def _resolve_reference(
                 local_cache_hit=local_cache_hit,
             )
 
-        staging_dir = _build_staging_dir(cache_dir, label, reference)
         _safe_log(
             logger,
             f"{label}_download_started repo_id={reference} cache_dir={cache_dir} "
             f"local_files_only={local_files_only} local_cache_hit={local_cache_hit} "
-            f"staging_dir={staging_dir}",
+            f"revision={revision or 'main'}",
         )
         try:
             snapshot_path = snapshot_download(
                 repo_id=reference,
                 repo_type="model",
                 cache_dir=cache_dir,
-                local_dir=staging_dir,
+                revision=revision,
                 local_files_only=local_files_only,
                 allow_patterns=allow_patterns,
             )
@@ -345,6 +350,7 @@ def _resolve_reference(
             allow_patterns=allow_patterns,
             probe_filenames=probe_filenames,
             download_strategy=download_strategy,
+            revision=revision,
         )
         fallback_result.original_reference = reference
         fallback_result.fallback_reference = fallback_reference
@@ -390,6 +396,19 @@ def _validate_resolved_paths(base_reference, adapter_reference, adapter_report):
             )
 
 
+def _verify_adapter_hash(adapter_reference, expected_sha256):
+    if not expected_sha256:
+        return
+    if not adapter_reference or not adapter_reference.resolved_local_path:
+        raise ModelLoadError("An adapter SHA256 was configured without a resolved adapter.")
+    path = Path(adapter_reference.resolved_local_path) / "adapter_model.safetensors"
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_sha256.lower():
+        raise ModelLoadError(f"Adapter SHA256 mismatch: {path}. Expected the verified best-eval adapter.")
+
 def _load_compatible_lora_config(adapter_local_path: str, LoraConfig):
     adapter_config_path = Path(adapter_local_path) / "adapter_config.json"
     try:
@@ -412,24 +431,32 @@ def _load_compatible_lora_config(adapter_local_path: str, LoraConfig):
 
 
 def _resolve_tokenizer_reference(spec, base_reference, adapter_reference, adapter_report, logger=None):
-    if spec.tokenizer_name_or_path:
-        effective_tokenizer_reference = spec.tokenizer_name_or_path
+    if spec.tokenizer_name_or_path or spec.tokenizer_revision:
+        effective_tokenizer_reference = spec.tokenizer_name_or_path or (
+            spec.adapter_path if spec.tokenizer_source == "adapter" and adapter_reference
+            and adapter_report.get("tokenizer.json", {}).get("exists")
+            else spec.base_model_name_or_path
+        )
         if (
-            spec.allow_auto_download_missing
+            spec.tokenizer_name_or_path
+            and spec.allow_auto_download_missing
             and spec.fallback_tokenizer_name_or_path
             and not _looks_like_remote_id(spec.tokenizer_name_or_path)
             and not Path(spec.tokenizer_name_or_path).exists()
         ):
             effective_tokenizer_reference = spec.fallback_tokenizer_name_or_path
 
-        if spec.adapter_path and effective_tokenizer_reference == spec.adapter_path and adapter_reference:
+        if (spec.adapter_path and effective_tokenizer_reference == spec.adapter_path and adapter_reference
+                and (spec.tokenizer_revision is None or spec.tokenizer_revision == spec.adapter_revision)):
             return adapter_reference.resolved_reference, "adapter"
-        if effective_tokenizer_reference == spec.base_model_name_or_path:
+        if (effective_tokenizer_reference == spec.base_model_name_or_path
+                and (spec.tokenizer_revision is None or spec.tokenizer_revision == spec.base_model_revision)):
             return base_reference.resolved_reference, "base"
 
         tokenizer_reference = _resolve_reference(
             effective_tokenizer_reference,
             label="tokenizer",
+            revision=spec.tokenizer_revision,
             cache_dir=spec.cache_dir,
             local_files_only=spec.local_files_only,
             logger=logger,
@@ -930,7 +957,14 @@ def load_model_bundle(spec, logger=None):
             f"name={profile_debug.get('throughput_profile_name')} "
             f"reason={exc}",
         )
-        return _load_model_bundle_once(spec, spec, retry_debug, logger=logger)
+    # Release the failed high-VRAM profile's traceback before retrying NF4.
+    gc.collect()
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    return _load_model_bundle_once(spec, spec, retry_debug, logger=logger)
 
 
 def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
@@ -938,20 +972,23 @@ def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
     apply_runtime_compat_shims(logger=logger)
     torch = _import_torch()
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig = _import_transformers()
-    LoraConfig, PeftModel = _import_peft()
+    LoraConfig, PeftModel = (None, ())
+    if spec.adapter_path:
+        LoraConfig, PeftModel = _import_peft()
 
     if "Qwen/Qwen3.5-" in str(spec.base_model_name_or_path) and not transformers_supports_qwen35():
         installed = get_dependency_versions().get("transformers") or "<missing>"
         raise ModelLoadError(
             "Qwen3.5 models require a newer Transformers build. "
             f"Installed transformers={installed}, required>={QWEN35_MIN_TRANSFORMERS}. "
-            "Run the extension install step once without --skip-install, or update the Forge venv to the pinned versions. "
+            "Use a separately configured compatible Transformers environment or select a supported GGUF model. "
             f"Current dependency set: {format_dependency_versions()}"
         )
 
     base_reference = _resolve_reference(
         spec.base_model_name_or_path,
         label="base_model",
+        revision=spec.base_model_revision,
         cache_dir=spec.cache_dir,
         local_files_only=spec.local_files_only,
         logger=logger,
@@ -961,9 +998,11 @@ def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
         fallback_reference=spec.fallback_base_model_name_or_path,
         allow_missing_fallback=bool(spec.allow_auto_download_missing),
     )
+    _check_local_model_architecture(base_reference.resolved_local_path)
     adapter_reference = _resolve_reference(
         spec.adapter_path,
         label="adapter",
+        revision=spec.adapter_revision,
         cache_dir=spec.cache_dir,
         local_files_only=spec.local_files_only,
         logger=logger,
@@ -973,6 +1012,7 @@ def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
         allow_missing_fallback=bool(spec.allow_auto_download_missing),
     )
 
+    _verify_adapter_hash(adapter_reference, spec.adapter_sha256)
     adapter_report = _inspect_adapter_dir(adapter_reference.resolved_local_path)
     _log_adapter_report(adapter_report, logger)
     _validate_resolved_paths(base_reference, adapter_reference, adapter_report)
@@ -1002,6 +1042,9 @@ def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
         "low_cpu_mem_usage": True,
         "cache_dir": spec.cache_dir,
     }
+
+    if spec.attn_implementation:
+        model_kwargs["attn_implementation"] = spec.attn_implementation
 
     if spec.load_in_4bit:
         quantization_config = BitsAndBytesConfig(
@@ -1109,6 +1152,8 @@ def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
                 try:
                     model = model.merge_and_unload()
                 except Exception as exc:
+                    if isinstance(exc, (MemoryError, getattr(torch, "OutOfMemoryError", MemoryError))) or "out of memory" in str(exc).lower():
+                        raise ModelLoadError(f"LoRA merge out of memory: {exc}") from exc
                     merge_lora_skipped_reason = "merge_failed"
                     _safe_log(
                         logger,
@@ -1191,3 +1236,24 @@ def _load_model_bundle_once(original_spec, spec, profile_debug, logger=None):
         model=model,
         load_debug=load_debug,
     )
+
+
+def _check_local_model_architecture(local_path):
+    """Reject unsupported Qwen3.5 configs before allocating model weights."""
+    if not local_path:
+        return
+    config_path = Path(local_path) / "config.json"
+    if not config_path.is_file():
+        return
+    config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    model_type = config.get("model_type", "")
+    if model_type not in {"qwen3_5", "qwen3_5_text"}:
+        return
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+    if model_type not in CONFIG_MAPPING_NAMES:
+        installed = get_dependency_versions().get("transformers") or "<missing>"
+        raise ModelLoadError(
+            f"Model architecture {model_type!r} is unsupported by Transformers {installed}. "
+            "Use a separate compatible environment (verified with Transformers 5.3/5.5) "
+            "or select a compatible GGUF model. The Forge environment has not been modified."
+        )

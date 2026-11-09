@@ -202,7 +202,8 @@ def build_initial_decision(
     llm_num_candidates = normalize_num_candidates(llm_num_candidates)
     llm_gen_prompt = coerce_text(llm_gen_prompt).strip()
     llm_preselected_candidate = coerce_text(llm_preselected_candidate)
-    original_prompt = coerce_text(original_prompt)
+    original_prompt = ([coerce_text(x) for x in original_prompt]
+                       if isinstance(original_prompt, list) else coerce_text(original_prompt))
 
     if not llm_enabled:
         return MergeDecision(
@@ -220,7 +221,10 @@ def build_initial_decision(
         )
 
     if llm_model_name == "none":
-        final_prompt = build_manual_positive(llm_gen_prompt, original_prompt)
+        final_prompt = original_prompt if not llm_gen_prompt else (
+            [build_manual_positive(llm_gen_prompt, item) for item in original_prompt]
+            if isinstance(original_prompt, list) else build_manual_positive(llm_gen_prompt, original_prompt)
+        )
         return MergeDecision(
             llm_enabled=True,
             llm_model_name=llm_model_name,
@@ -506,6 +510,7 @@ class ForgeLlmPromptGenScript(scripts.Script):
 
     def _generate_with_llm(self, decision, negative_prompt, *, offload_image_model=False):
         runtime = get_runtime()
+        unload_after_error = False
 
         _unload_state = {"done": False}
 
@@ -524,6 +529,8 @@ class ForgeLlmPromptGenScript(scripts.Script):
             decision.error = "interrupted before llm call"
             decision.runtime_action = "skipped_due_to_interrupt"
             self._log("interrupt detected before llm generation; falling back to original prompt")
+            if decision.llm_load_mode == "load_then_unload_before_image_gen":
+                _unload_once()
             return decision
 
         try:
@@ -599,8 +606,15 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 result.input_debug.get("original_prompt_injected_to_llm", False)
             )
 
+            if decision.interrupted:
+                decision.selected_positive = ""
+                decision.final_prompt = decision.original_prompt
+                decision.changed = False
+                return decision
+
             preselected = coerce_text(decision.llm_preselected_candidate).strip()
-            if preselected and result.candidates and preselected in result.candidates:
+            if (preselected and result.candidates and preselected in result.candidates
+                    and prompt_builder_module.is_generated_prompt_strong_enough(preselected)[0]):
                 decision.chosen_candidate = preselected
                 for entry in result.candidate_debug:
                     if entry.get("cleaned_output") == preselected:
@@ -644,7 +658,8 @@ class ForgeLlmPromptGenScript(scripts.Script):
             decision.changed = False
             if exc.is_oom:
                 self._log(f"llm generation OOM: {exc}; falling back to original prompt")
-                _unload_once()
+                unload_after_error = True
+                decision.runtime_action = "unloaded_after_oom"
             else:
                 self._log(f"llm generation failed: {exc}; falling back to original prompt")
         except Exception as exc:
@@ -654,10 +669,23 @@ class ForgeLlmPromptGenScript(scripts.Script):
             self._log(f"unexpected llm error: {exc}; falling back to original prompt")
             traceback.print_exc()
         finally:
-            if decision.llm_load_mode == "load_then_unload_before_image_gen":
+            # Leave exception handlers before releasing weights and cached allocations.
+            if unload_after_error or decision.llm_load_mode == "load_then_unload_before_image_gen":
                 _unload_once()
 
         return decision
+
+    def _apply_selected_positive(self, decision):
+        details = build_final_positive_details(
+            decision.selected_positive, decision.original_prompt, append_original=True,
+        )
+        for key in (
+            "original_prompt_appended_after_llm", "dedupe_applied",
+            "final_positive_before_dedupe", "final_positive_after_dedupe",
+        ):
+            setattr(decision, key, details[key])
+        decision.final_prompt = details["final_positive_after_dedupe"]
+        decision.changed = decision.final_prompt != decision.original_prompt
 
     def _preview_candidates(
         self,
@@ -685,51 +713,96 @@ class ForgeLlmPromptGenScript(scripts.Script):
             return decision
         return self._generate_with_llm(decision, negative_prompt="", offload_image_model=False)
 
-    def before_process(
-        self,
-        p,
-        llm_enabled,
-        llm_model_name,
-        llm_load_mode,
-        llm_weight_mode,
-        llm_max_new_tokens,
-        llm_num_candidates,
-        llm_gen_prompt,
-        llm_selected_candidate,
-    ):
+    def before_process(self, p, llm_enabled, llm_model_name, llm_load_mode,
+                       llm_weight_mode, llm_max_new_tokens, llm_num_candidates,
+                       llm_gen_prompt, llm_selected_candidate):
         try:
             original_prompt = getattr(p, "prompt", "")
             negative_prompt = getattr(p, "negative_prompt", "")
-
-            decision = build_initial_decision(
-                llm_enabled,
-                llm_model_name,
-                llm_load_mode,
-                llm_weight_mode,
-                llm_max_new_tokens,
-                llm_gen_prompt,
-                original_prompt,
-                llm_num_candidates=llm_num_candidates,
-                llm_preselected_candidate=llm_selected_candidate,
+            prompt_is_batch = isinstance(original_prompt, list)
+            negative_is_batch = isinstance(negative_prompt, list)
+            # Forge accepts a prompt list, or a scalar prompt broadcast across
+            # a negative-prompt list. Preserve the image-to-prompt mapping.
+            if prompt_is_batch and negative_is_batch and len(original_prompt) != len(negative_prompt):
+                raise ValueError("Prompt and negative prompt batches must have the same length")
+            prompt_values = original_prompt if prompt_is_batch else (
+                [original_prompt] * len(negative_prompt) if negative_is_batch else [original_prompt]
             )
+            negative_values = negative_prompt if negative_is_batch else [negative_prompt] * len(prompt_values)
+            decisions = []
+            generated_by_negative = {}
+            interrupted = False
 
-            if not decision.llm_enabled:
-                runtime = get_runtime()
-                unloaded = runtime.unload(logger=self._log)
-                decision.runtime_action = "disabled_and_unloaded_model" if unloaded else "disabled_no_loaded_model"
-            elif decision.llm_model_name != "none" and not decision.gen_prompt_empty:
-                decision = self._generate_with_llm(
-                    decision,
-                    negative_prompt,
-                    offload_image_model=True,
+            for prompt_value, negative_value in zip(prompt_values, negative_values):
+                decision = build_initial_decision(
+                    llm_enabled, llm_model_name, llm_load_mode, llm_weight_mode, llm_max_new_tokens,
+                        llm_gen_prompt, prompt_value, llm_num_candidates, llm_selected_candidate,
+                )
+                if decision.llm_enabled and decision.llm_model_name != "none" and not decision.gen_prompt_empty:
+                    interrupted = interrupted or self._is_interrupted()
+                    if interrupted:
+                        decision.interrupted = True
+                    else:
+                        negative_key = coerce_text(negative_value)
+                        previous = generated_by_negative.get(negative_key)
+                        if previous is None:
+                            decision = self._generate_with_llm(decision, negative_value, offload_image_model=True)
+                            generated_by_negative[negative_key] = decision
+                        else:
+                            # Original prompts are deliberately not sent to the LLM.
+                            # Reuse the rewrite for identical negative references,
+                            # but append each image's original prompt separately.
+                            decision = replace(
+                                previous, original_prompt=decision.original_prompt,
+                                final_prompt=decision.original_prompt, changed=False,
+                            )
+                            if decision.llm_called and not decision.interrupted and not decision.error:
+                                self._apply_selected_positive(decision)
+                    interrupted = interrupted or decision.interrupted or self._is_interrupted()
+                decisions.append(decision)
+
+            if interrupted:
+                # Commit a batch only after it completes. Stop must not apply
+                # a mixture of rewritten, cached, and untouched prompts.
+                decisions = [replace(
+                    item, final_prompt=item.original_prompt, changed=False,
+                    interrupted=True, selected_positive="",
+                    original_prompt_appended_after_llm=False, dedupe_applied=False,
+                    final_positive_before_dedupe="", final_positive_after_dedupe="",
+                ) for item in decisions]
+
+            if decisions:
+                decision = decisions[0]
+            else:
+                decision = build_initial_decision(
+                    llm_enabled, llm_model_name, llm_load_mode, llm_weight_mode, llm_max_new_tokens,
+                    llm_gen_prompt, original_prompt, llm_num_candidates, llm_selected_candidate,
                 )
 
+            if not decision.llm_enabled:
+                unloaded = get_runtime().unload(logger=self._log)
+                decision.runtime_action = "disabled_and_unloaded_model" if unloaded else "disabled_no_loaded_model"
+            elif not generated_by_negative and decision.llm_load_mode == "load_then_unload_before_image_gen":
+                # A previous keep_loaded request may still own VRAM even when
+                # this request skips the LLM (none or an empty Gen Prompt).
+                get_runtime().unload(logger=self._log)
+                decision.runtime_action = "load_then_unload_before_image_gen"
+
+            if prompt_is_batch or negative_is_batch:
+                final_prompts = [item.final_prompt for item in decisions]
+                decision = replace(
+                    decision, original_prompt=original_prompt, final_prompt=final_prompts,
+                    changed=any(item.changed for item in decisions),
+                )
             setattr(p, "_llm_prompt_gen_decision", decision)
+            setattr(p, "_llm_prompt_gen_decisions", decisions)
             setattr(p, "_llm_prompt_gen_candidates", list(decision.candidates))
 
             if decision.changed:
                 p.prompt = decision.final_prompt
         except Exception as exc:
+            if not llm_enabled or normalize_load_mode(llm_load_mode) == "load_then_unload_before_image_gen":
+                get_runtime().unload(logger=self._log)
             self._log(f"prompt merge failed in before_process: {exc}")
             traceback.print_exc()
 
@@ -769,6 +842,8 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 p.extra_generation_params["LLM Prompt Gen"] = "manual prepend"
             elif decision.gen_prompt_empty:
                 p.extra_generation_params["LLM Prompt Gen"] = "model selected (gen prompt empty)"
+            elif decision.interrupted:
+                p.extra_generation_params["LLM Prompt Gen"] = "llm interrupted"
             elif decision.llm_called:
                 p.extra_generation_params["LLM Prompt Gen"] = "llm generated"
             else:
@@ -785,6 +860,7 @@ class ForgeLlmPromptGenScript(scripts.Script):
                 p.extra_generation_params["LLM Candidate Selection"] = "user_selected"
             elif decision.candidate_count > 1:
                 p.extra_generation_params["LLM Candidate Selection"] = "auto_pick"
+            p.extra_generation_params["LLM Interrupted"] = decision.interrupted
             p.extra_generation_params["LLM Called"] = decision.llm_called
             p.extra_generation_params["LLM Fallback Used"] = decision.fallback_used
             p.extra_generation_params["LLM Seed Mode"] = decision.seed_mode

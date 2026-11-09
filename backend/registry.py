@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -21,6 +22,13 @@ class ModelSpec:
     key: str
     base_model_name_or_path: str = ""
     adapter_path: str | None = None
+    base_model_revision: str | None = None
+    adapter_revision: str | None = None
+    tokenizer_revision: str | None = None
+    adapter_sha256: str | None = None
+    attn_implementation: str | None = None
+    gguf_revision: str | None = None
+    gguf_sha256: str | None = None
     tokenizer_name_or_path: str | None = None
     cache_dir: str | None = None
     fallback_base_model_name_or_path: str | None = None
@@ -53,6 +61,7 @@ class ModelSpec:
     n_threads: int | None = None
     flash_attn: bool = True
     thinking_suppression: str = "auto"
+    gguf_prompt_mode: str = "legacy"
     description: str = ""
 
     def signature(self):
@@ -81,14 +90,8 @@ def _read_json_file(path: Path):
 
 
 def _looks_like_remote_id(value: str):
-    normalized = value.replace("\\", "/")
-    return (
-        "/" in normalized
-        and not normalized.startswith("./")
-        and not normalized.startswith("../")
-        and not normalized.startswith("<")
-        and normalized.count("/") == 1
-    )
+    # A missing Windows path (C:\models) must never become an HF repo ID.
+    return bool(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*", str(value)))
 
 
 def _resolve_path(value: str | None, *, allow_remote_id=True):
@@ -206,6 +209,13 @@ def get_model_spec(model_key: str):
             "or 'gguf_repo_id' + 'gguf_filename'."
         )
 
+    gguf_prompt_mode = str(entry.get("gguf_prompt_mode", "legacy") or "legacy").strip().lower()
+    if gguf_prompt_mode not in {"legacy", "embedded_template"}:
+        raise RegistryError(
+            f"Model key '{model_key}' has unsupported gguf_prompt_mode '{gguf_prompt_mode}'. "
+            "Use legacy or embedded_template."
+        )
+
     thinking_suppression = str(entry.get("thinking_suppression", "auto") or "auto").strip().lower()
     if thinking_suppression not in {"auto", "no_think", "none"}:
         raise RegistryError(
@@ -217,6 +227,13 @@ def get_model_spec(model_key: str):
         key=model_key,
         base_model_name_or_path=_resolve_path(base_model_name_or_path),
         adapter_path=_resolve_path(entry.get("adapter_path")),
+        base_model_revision=entry.get("base_model_revision"),
+        adapter_revision=entry.get("adapter_revision"),
+        tokenizer_revision=entry.get("tokenizer_revision"),
+        adapter_sha256=entry.get("adapter_sha256"),
+        attn_implementation=entry.get("attn_implementation"),
+        gguf_revision=entry.get("gguf_revision"),
+        gguf_sha256=entry.get("gguf_sha256"),
         tokenizer_name_or_path=_resolve_path(entry.get("tokenizer_name_or_path")),
         cache_dir=_resolve_path(entry.get("cache_dir"), allow_remote_id=False),
         fallback_base_model_name_or_path=_resolve_path(entry.get("fallback_base_model_name_or_path")),
@@ -249,6 +266,7 @@ def get_model_spec(model_key: str):
         n_threads=entry.get("n_threads", None),
         flash_attn=bool(entry.get("flash_attn", True)),
         thinking_suppression=thinking_suppression,
+        gguf_prompt_mode=gguf_prompt_mode,
         description=entry.get("description", ""),
     )
 
