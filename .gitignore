@@ -11,3 +11,17 @@ configs/model_registry.json
 .vscode/
 .idea/
 publish/
+
+# Secrets and local experiment outputs
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+*.db
+automation/output/
+automation/models/

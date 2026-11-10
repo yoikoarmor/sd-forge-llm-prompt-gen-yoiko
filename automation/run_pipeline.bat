@@ -2,7 +2,8 @@
 rem Full pipeline: generate -> score -> report
 rem Usage: run_pipeline.bat [count]
 setlocal
-set PY=C:\path\to\forge\venv\Scripts\python.exe
+rem Activate the desired Python environment first, or set PY explicitly.
+if not defined PY set "PY=python"
 set COUNT=%1
 if "%COUNT%"=="" set COUNT=20
 cd /d "%~dp0"

@@ -1,0 +1,22 @@
+name: Privacy check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test scanner
+        run: python -m unittest discover -s tests -p test_privacy_check.py
+      - name: Check tracked content and introduced commit metadata
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python tools/check_privacy.py --base "$BASE" --head "$HEAD"
