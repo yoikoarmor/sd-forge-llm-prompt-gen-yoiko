@@ -1,5 +1,7 @@
 import unittest
-from tools.check_privacy import forbidden_path, scan_content
+import subprocess
+from unittest.mock import patch
+from tools.check_privacy import forbidden_path, scan_content, introduced_commits
 
 
 class PrivacyChecks(unittest.TestCase):
@@ -22,6 +24,17 @@ class PrivacyChecks(unittest.TestCase):
 
     def test_local_home_path(self):
         self.assertIn("personal-home-path", scan_content(b"C:" + b"/Users/" + b"person/private"))
+
+    def test_missing_base_scans_full_history(self):
+        with patch("tools.check_privacy.subprocess.check_output", side_effect=subprocess.CalledProcessError(128, "git")):
+            with patch("tools.check_privacy.git", return_value=b"first\nsecond\n") as git:
+                self.assertEqual(["first", "second"], introduced_commits("missing", "head"))
+                git.assert_called_once_with("rev-list", "head")
+
+    def test_zero_base_scans_full_history(self):
+        with patch("tools.check_privacy.git", return_value=b"first\nsecond\n") as git:
+            self.assertEqual(["first", "second"], introduced_commits("0" * 40, "head"))
+            git.assert_called_once_with("rev-list", "head")
 
 
 if __name__ == "__main__":

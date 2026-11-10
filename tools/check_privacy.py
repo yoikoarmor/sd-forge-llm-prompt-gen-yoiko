@@ -37,19 +37,31 @@ def git(*args):
     return subprocess.check_output(["git", *args])
 
 
+def introduced_commits(base, head):
+    if not base:
+        return [head]
+    if set(base) == {"0"}:
+        return git("rev-list", head).decode().splitlines()
+    try:
+        resolved = subprocess.check_output(
+            ["git", "rev-parse", "--verify", base + "^{commit}"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except subprocess.CalledProcessError:
+        # History rewrites can make the event's previous SHA unavailable.
+        # Inspect MORE history, never skip the check or silently pass.
+        print("Base commit unavailable; scanning all history reachable from head.")
+        return git("rev-list", head).decode().splitlines()
+    return git("rev-list", resolved + ".." + head).decode().splitlines()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
     args = parser.parse_args()
     head = git("rev-parse", "--verify", args.head + "^{commit}").decode().strip()
-    base = args.base
-    if base and set(base) != {"0"}:
-        base = git("rev-parse", "--verify", base + "^{commit}").decode().strip()
-        commits = git("rev-list", base + ".." + head).decode().splitlines()
-    else:
-        # Explicit zero base means a new branch: inspect all newly introduced history.
-        commits = git("rev-list", head).decode().splitlines() if base else [head]
+    commits = introduced_commits(args.base, head)
     failures = []
     seen = set()
     for commit in set(commits + [head]):
